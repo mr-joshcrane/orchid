@@ -185,7 +185,7 @@ func (r *Runtime) processEffect(p *Process, pe ProposedEffect) EffectResult {
 	r.Log.Append(Event{
 		Type:      EventEffectAdmitted,
 		ProcessID: p.ID,
-		Data:      map[string]string{"effect_id": eff.ID},
+		Data:      map[string]string{"effect_id": eff.ID, "tool": pe.Tool},
 	})
 
 	handler, ok := r.Effects.GetHandler(pe.Tool)
@@ -204,7 +204,7 @@ func (r *Runtime) processEffect(p *Process, pe ProposedEffect) EffectResult {
 	r.Log.Append(Event{
 		Type:      EventEffectStarted,
 		ProcessID: p.ID,
-		Data:      map[string]string{"effect_id": eff.ID},
+		Data:      map[string]string{"effect_id": eff.ID, "tool": pe.Tool},
 	})
 
 	result, err := handler(pe.Args)
@@ -231,7 +231,7 @@ func (r *Runtime) processEffect(p *Process, pe ProposedEffect) EffectResult {
 	r.Log.Append(Event{
 		Type:      EventEffectApplied,
 		ProcessID: p.ID,
-		Data:      map[string]string{"effect_id": eff.ID},
+		Data:      map[string]string{"effect_id": eff.ID, "tool": pe.Tool},
 	})
 
 	return EffectResult{Tool: pe.Tool, Admitted: true, Result: result}

@@ -18,6 +18,7 @@ type Tool struct {
 type Agent struct {
 	endpoint string
 	model    string
+	gen      Generator
 	tools    []Tool
 	purpose  string
 	rt       *Runtime
@@ -29,6 +30,10 @@ func New(endpoint, model string) *Agent {
 		endpoint: endpoint,
 		model:    model,
 	}
+}
+
+func NewFromGenerator(gen Generator) *Agent {
+	return &Agent{gen: gen}
 }
 
 func (a *Agent) Can(tools ...Tool) *Agent {
@@ -108,9 +113,12 @@ func (a *Agent) ensureRuntime() {
 	if a.rt != nil {
 		return
 	}
-	gen := &llmGenerator{
-		endpoint: a.endpoint,
-		model:    a.model,
+	gen := a.gen
+	if gen == nil {
+		gen = &llmGenerator{
+			endpoint: a.endpoint,
+			model:    a.model,
+		}
 	}
 	a.rt = NewRuntime(gen)
 	for _, t := range a.tools {
@@ -208,7 +216,12 @@ func formatEventData(e Event) string {
 	case EventJoin:
 		return fmt.Sprintf("child=%s result=%s", e.Data["child_id"], truncateStr(e.Data["result"], 60))
 	default:
-		if id, ok := e.Data["effect_id"]; ok {
+		id, hasID := e.Data["effect_id"]
+		tool := e.Data["tool"]
+		if hasID && tool != "" {
+			return fmt.Sprintf("effect=%s tool=%s", id, tool)
+		}
+		if hasID {
 			return fmt.Sprintf("effect=%s", id)
 		}
 		return ""
