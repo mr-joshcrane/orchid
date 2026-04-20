@@ -51,6 +51,7 @@ type Process struct {
 	History        any
 	PendingResults []EffectResult
 	EffectCache    map[string]EffectResult
+	SummarisedMsgs map[int]bool
 }
 
 func (p *Process) HasCapability(c Capability) bool {

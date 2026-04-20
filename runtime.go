@@ -118,6 +118,8 @@ func (r *Runtime) Step(processID string) (string, []EffectResult) {
 	}
 	p.State = ProcessRunning
 
+	r.summarisePreviousResults(p)
+
 	ctx := BuildContext(p)
 	proposal := r.Generator.Generate(ctx)
 
@@ -137,31 +139,52 @@ func (r *Runtime) Step(processID string) (string, []EffectResult) {
 
 	p.PendingResults = results
 
-	if len(results) > 0 {
-		r.summariseResults(p)
-	}
-
 	p.State = ProcessWaiting
 	return proposal.Text, results
 }
 
-func (r *Runtime) summariseResults(p *Process) {
+func (r *Runtime) summarisePreviousResults(p *Process) {
+	history, ok := p.History.([]bedrockMessage)
+	if !ok || len(history) < 4 {
+		return
+	}
+	if p.SummarisedMsgs == nil {
+		p.SummarisedMsgs = make(map[int]bool)
+	}
 	task := r.getOriginalTask(p)
-	for i := range p.PendingResults {
-		result := &p.PendingResults[i]
-		if result.Result == "" || len(result.Result) < 200 {
+	for i := range history {
+		if p.SummarisedMsgs[i] {
 			continue
 		}
-		ctx := Context{
-			Spec: ProcessSpec{SystemPrompt: "Extract the key findings from this tool output that are relevant to the task. Include file paths, versions, line numbers, and specific values. One to three sentences max."},
-			Events: []Event{{
-				Type: EventUserInput,
-				Data: map[string]string{"content": fmt.Sprintf("Task: %s\n\nTool: %s\nOutput:\n%s", task, result.Tool, result.Result)},
-			}},
+		msg := &history[i]
+		if msg.Role != "user" {
+			continue
 		}
-		summary := r.Generator.Generate(ctx)
-		result.Result = summary.Text
+		if i+1 >= len(history)-2 {
+			break
+		}
+		for j := range msg.Content {
+			tr := msg.Content[j].ToolResult
+			if tr == nil {
+				continue
+			}
+			raw := tr.Content[0].Text
+			if len(raw) < 500 {
+				continue
+			}
+			ctx := Context{
+				Spec: ProcessSpec{SystemPrompt: "Extract the key findings from this tool output that are relevant to the task. Include file paths, versions, line numbers, and specific values. One to three sentences max."},
+				Events: []Event{{
+					Type: EventUserInput,
+					Data: map[string]string{"content": fmt.Sprintf("Task: %s\n\nTool output:\n%s", task, raw)},
+				}},
+			}
+			summary := r.Generator.Generate(ctx)
+			tr.Content = []bedrockTextBlock{{Text: summary.Text}}
+		}
+		p.SummarisedMsgs[i] = true
 	}
+	p.History = history
 }
 
 func (r *Runtime) getOriginalTask(p *Process) string {
