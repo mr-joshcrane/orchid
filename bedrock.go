@@ -84,6 +84,7 @@ func (g *BedrockGenerator) Generate(ctx Context) Proposal {
 	}
 
 	tools := g.buildTools(ctx.Tools)
+	compactHistory(history)
 	body := bedrockRequest{
 		Messages: history,
 		System:   []bedrockTextBlock{{Text: ctx.Spec.SystemPrompt}},
@@ -147,6 +148,35 @@ func resp2msg(p Proposal) bedrockMessage {
 		}
 	}
 	return bedrockMessage{Role: "assistant", Content: content}
+}
+
+func compactHistory(history []bedrockMessage) {
+	for i := 0; i < len(history)-2; i++ {
+		msg := &history[i]
+		if msg.Role != "user" {
+			continue
+		}
+		hasToolResult := false
+		for j := range msg.Content {
+			if msg.Content[j].ToolResult != nil {
+				hasToolResult = true
+			}
+		}
+		if !hasToolResult {
+			continue
+		}
+		nextIsAssistant := i+1 < len(history) && history[i+1].Role == "assistant"
+		if !nextIsAssistant {
+			continue
+		}
+		for j := range msg.Content {
+			tr := msg.Content[j].ToolResult
+			if tr == nil {
+				continue
+			}
+			tr.Content = []bedrockTextBlock{{Text: "(see assistant response below)"}}
+		}
+	}
 }
 
 func (g *BedrockGenerator) buildTools(tools []ToolDefinition) []bedrockTool {
