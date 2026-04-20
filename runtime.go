@@ -119,6 +119,8 @@ func (r *Runtime) Step(processID string) (string, []EffectResult) {
 	ctx := BuildContext(p)
 	proposal := r.Generator.Generate(ctx)
 
+	p.History = proposal.History
+
 	r.Log.Append(Event{
 		Type:      EventAssistantOutput,
 		ProcessID: processID,
@@ -131,16 +133,18 @@ func (r *Runtime) Step(processID string) (string, []EffectResult) {
 		results = append(results, result)
 	}
 
+	p.PendingResults = results
 	p.State = ProcessWaiting
 	return proposal.Text, results
 }
 
 // EffectResult captures the outcome of processing one proposed effect.
 type EffectResult struct {
-	Tool     string
-	Admitted bool
-	Result   string
-	Error    string
+	Tool      string
+	ToolUseID string
+	Admitted  bool
+	Result    string
+	Error     string
 }
 
 func (r *Runtime) processEffect(p *Process, pe ProposedEffect) EffectResult {
@@ -168,7 +172,7 @@ func (r *Runtime) processEffect(p *Process, pe ProposedEffect) EffectResult {
 			ProcessID: p.ID,
 			Data:      map[string]string{"effect_id": eff.ID, "reason": reason},
 		})
-		return EffectResult{Tool: pe.Tool, Admitted: false, Error: reason}
+		return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: false, Error: reason}
 	}
 
 	if ok, reason := r.Effects.CheckPolicies(p, eff); !ok {
@@ -178,7 +182,7 @@ func (r *Runtime) processEffect(p *Process, pe ProposedEffect) EffectResult {
 			ProcessID: p.ID,
 			Data:      map[string]string{"effect_id": eff.ID, "reason": reason},
 		})
-		return EffectResult{Tool: pe.Tool, Admitted: false, Error: reason}
+		return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: false, Error: reason}
 	}
 
 	eff.State = EffectAdmitted
@@ -197,7 +201,7 @@ func (r *Runtime) processEffect(p *Process, pe ProposedEffect) EffectResult {
 			ProcessID: p.ID,
 			Data:      map[string]string{"effect_id": eff.ID, "reason": reason},
 		})
-		return EffectResult{Tool: pe.Tool, Admitted: true, Error: reason}
+		return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: true, Error: reason}
 	}
 
 	eff.State = EffectStarted
@@ -216,7 +220,7 @@ func (r *Runtime) processEffect(p *Process, pe ProposedEffect) EffectResult {
 			ProcessID: p.ID,
 			Data:      map[string]string{"effect_id": eff.ID, "reason": err.Error()},
 		})
-		return EffectResult{Tool: pe.Tool, Admitted: true, Error: err.Error()}
+		return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: true, Error: err.Error()}
 	}
 
 	eff.State = EffectObserved
@@ -234,7 +238,7 @@ func (r *Runtime) processEffect(p *Process, pe ProposedEffect) EffectResult {
 		Data:      map[string]string{"effect_id": eff.ID, "tool": pe.Tool},
 	})
 
-	return EffectResult{Tool: pe.Tool, Admitted: true, Result: result}
+	return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: true, Result: result}
 }
 
 func mergeMap(base, overlay map[string]string) map[string]string {

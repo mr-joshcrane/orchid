@@ -7,9 +7,11 @@ func BuildContext(p *Process) Context {
 	events := visibleEvents(p)
 
 	ctx := Context{
-		Spec:   p.Spec,
-		Events: events,
-		Tools:  p.Tools,
+		Spec:           p.Spec,
+		Events:         events,
+		Tools:          p.Tools,
+		History:        p.History,
+		PendingResults: p.PendingResults,
 	}
 
 	for _, e := range events {

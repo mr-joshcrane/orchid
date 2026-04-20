@@ -10,26 +10,31 @@ import (
 
 // Proposal is what a Generator returns — text output plus effect intents.
 type Proposal struct {
-	Text     string
-	Effects  []ProposedEffect
-	PromptID string
+	Text       string
+	Effects    []ProposedEffect
+	PromptID   string
+	RawMessage string
+	History    any
 }
 
 // ProposedEffect is a tool call the generator wants to make.
 type ProposedEffect struct {
-	Tool string
-	Args map[string]string
+	Tool      string
+	Args      map[string]string
+	ToolUseID string
 }
 
 // Context is the structured state visible to a generator.
 type Context struct {
-	Spec         ProcessSpec
-	Events       []Event
-	LastInput    string
-	ToolResults  []ToolResultEntry
-	ChildResults []ChildResultEntry
-	Step         int
-	Tools        []ToolDefinition
+	Spec           ProcessSpec
+	Events         []Event
+	LastInput      string
+	ToolResults    []ToolResultEntry
+	ChildResults   []ChildResultEntry
+	Step           int
+	Tools          []ToolDefinition
+	History        any
+	PendingResults []EffectResult
 }
 
 // ToolResultEntry pairs a tool name with its result.

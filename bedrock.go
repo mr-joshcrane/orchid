@@ -48,11 +48,44 @@ func NewBedrockGenerator(model string) (*BedrockGenerator, error) {
 }
 
 func (g *BedrockGenerator) Generate(ctx Context) Proposal {
-	messages := g.buildMessages(ctx)
-	tools := g.buildTools(ctx.Tools)
+	var history []bedrockMessage
+	if h, ok := ctx.History.([]bedrockMessage); ok {
+		history = h
+	}
 
+	if len(ctx.PendingResults) > 0 {
+		var toolResults []bedrockContentBlock
+		for _, r := range ctx.PendingResults {
+			status := "success"
+			content := r.Result
+			if r.Error != "" {
+				status = "error"
+				content = r.Error
+			}
+			toolResults = append(toolResults, bedrockContentBlock{
+				ToolResult: &bedrockToolResult{
+					ToolUseID: r.ToolUseID,
+					Content:   []bedrockTextBlock{{Text: content}},
+					Status:    status,
+				},
+			})
+		}
+		history = append(history, bedrockMessage{Role: "user", Content: toolResults})
+	}
+
+	if len(history) == 0 || ctx.LastInput != "" {
+		lastEvent := lastUserInput(ctx.Events)
+		if lastEvent != "" && (len(history) == 0 || !alreadyInHistory(history, lastEvent)) {
+			history = append(history, bedrockMessage{
+				Role:    "user",
+				Content: []bedrockContentBlock{{Text: strPtr(lastEvent)}},
+			})
+		}
+	}
+
+	tools := g.buildTools(ctx.Tools)
 	body := bedrockRequest{
-		Messages: messages,
+		Messages: history,
 		System:   []bedrockTextBlock{{Text: ctx.Spec.SystemPrompt}},
 		InferenceConfig: &bedrockInferenceConfig{
 			Temperature: floatPtr(0),
@@ -67,52 +100,53 @@ func (g *BedrockGenerator) Generate(ctx Context) Proposal {
 	raw, err := g.call(payload)
 	if err != nil {
 		trace.save(payload, []byte(err.Error()))
-		return Proposal{Text: fmt.Sprintf("error: %s", err), PromptID: trace.id}
+		return Proposal{Text: fmt.Sprintf("error: %s", err), PromptID: trace.id, History: history}
 	}
 
 	trace.save(payload, raw)
 	p := g.parseResponse(raw)
 	p.PromptID = trace.id
+
+	history = append(history, resp2msg(p))
+	p.History = history
 	return p
 }
 
-func (g *BedrockGenerator) buildMessages(ctx Context) []bedrockMessage {
-	var msgs []bedrockMessage
-
-	for _, e := range ctx.Events {
-		switch e.Type {
-		case EventUserInput:
-			msgs = append(msgs, bedrockMessage{
-				Role:    "user",
-				Content: []bedrockContentBlock{{Text: strPtr(e.Data["content"])}},
-			})
-		case EventAssistantOutput:
-			content := e.Data["content"]
-			if content == "" {
-				continue
-			}
-			msgs = append(msgs, bedrockMessage{
-				Role:    "assistant",
-				Content: []bedrockContentBlock{{Text: &content}},
-			})
-		case EventEffectObserved:
-			msgs = append(msgs, bedrockMessage{
-				Role: "user",
-				Content: []bedrockContentBlock{{Text: strPtr(
-					fmt.Sprintf("[tool %s result]: %s", e.Data["tool"], e.Data["result"]),
-				)}},
-			})
-		case EventEffectRejected:
-			msgs = append(msgs, bedrockMessage{
-				Role: "user",
-				Content: []bedrockContentBlock{{Text: strPtr(
-					fmt.Sprintf("[tool %s rejected]: %s", e.Data["tool"], e.Data["reason"]),
-				)}},
-			})
+func lastUserInput(events []Event) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == EventUserInput {
+			return events[i].Data["content"]
 		}
 	}
+	return ""
+}
 
-	return msgs
+func alreadyInHistory(history []bedrockMessage, text string) bool {
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role != "user" {
+			continue
+		}
+		for _, c := range history[i].Content {
+			if c.Text != nil && *c.Text == text {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func resp2msg(p Proposal) bedrockMessage {
+	var content []bedrockContentBlock
+	if p.Text != "" {
+		content = append(content, bedrockContentBlock{Text: strPtr(p.Text)})
+	}
+	if p.RawMessage != "" {
+		var msg bedrockMessage
+		if err := json.Unmarshal([]byte(p.RawMessage), &msg); err == nil {
+			return msg
+		}
+	}
+	return bedrockMessage{Role: "assistant", Content: content}
 }
 
 func (g *BedrockGenerator) buildTools(tools []ToolDefinition) []bedrockTool {
@@ -182,6 +216,8 @@ func (g *BedrockGenerator) parseResponse(raw []byte) Proposal {
 	}
 
 	msg := resp.Output.Message
+	rawMsg, _ := json.Marshal(msg)
+
 	var text string
 	var effects []ProposedEffect
 
@@ -195,13 +231,14 @@ func (g *BedrockGenerator) parseResponse(raw []byte) Proposal {
 				args[k] = fmt.Sprint(v)
 			}
 			effects = append(effects, ProposedEffect{
-				Tool: block.ToolUse.Name,
-				Args: args,
+				Tool:      block.ToolUse.Name,
+				Args:      args,
+				ToolUseID: block.ToolUse.ToolUseID,
 			})
 		}
 	}
 
-	return Proposal{Text: text, Effects: effects}
+	return Proposal{Text: text, Effects: effects, RawMessage: string(rawMsg)}
 }
 
 // Bedrock Converse API types.

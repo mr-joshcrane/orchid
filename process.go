@@ -40,14 +40,16 @@ const (
 
 // Process is a running agent in the runtime.
 type Process struct {
-	ID           string
-	Spec         ProcessSpec
-	Capabilities map[Capability]bool
-	View         LogView
-	State        ProcessState
-	ParentID     string
-	Mailbox      []Event
-	Tools        []ToolDefinition
+	ID             string
+	Spec           ProcessSpec
+	Capabilities   map[Capability]bool
+	View           LogView
+	State          ProcessState
+	ParentID       string
+	Mailbox        []Event
+	Tools          []ToolDefinition
+	History        any
+	PendingResults []EffectResult
 }
 
 func (p *Process) HasCapability(c Capability) bool {
