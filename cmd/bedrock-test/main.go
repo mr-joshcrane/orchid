@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/joshc/orchid"
+	"github.com/mr-joshcrane/orchid"
 )
 
 func main() {
@@ -24,7 +24,8 @@ func main() {
 	a.System("You are a helpful assistant. Be concise.")
 
 	fmt.Println("=== Simple question ===")
-	result, _, err := a.Run("What is 2 + 2? Answer in one word.")
+	a.GiveTask("What is 2 + 2? Answer in one word.")
+	result, _, err := a.Step()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -42,7 +43,8 @@ func main() {
 	})
 	b.System("You are a helpful assistant. Be concise.")
 
-	result, effects, err := b.Run("Read the file at /tmp/notes.txt and summarize it.")
+	b.GiveTask("Read the file at /tmp/notes.txt and summarize it.")
+	result, effects, err := b.Step()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -51,6 +53,14 @@ func main() {
 	for _, e := range effects {
 		fmt.Printf("  effect: tool=%s admitted=%v result=%q err=%q\n", e.Tool, e.Admitted, e.Result, e.Error)
 	}
+
+	fmt.Println("\n=== Step (model sees tool result) ===")
+	result, _, err = b.Step()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(result)
 
 	fmt.Println("\n=== Event log ===")
 	orchid.PrintLog(os.Stdout, b.Log())

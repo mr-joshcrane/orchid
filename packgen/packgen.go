@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/joshc/orchid"
+	"github.com/mr-joshcrane/orchid"
 )
 
 type Project struct {
@@ -59,7 +59,8 @@ func plan(p Project) (string, []string) {
 	} else {
 		a := orchid.New(p.Endpoint, p.Model)
 		a.System("You are a Go architect. When asked to design a package, respond with ONLY:\n1. The type definitions (structs, named types) needed\n2. The full function/method signatures\nUse valid Go syntax. No implementations, no comments, no explanation.")
-		result, _, _ = a.Run(p.Spec)
+		a.GiveTask(p.Spec)
+		result, _, _ = a.Step()
 	}
 
 	var signatures []string
@@ -96,11 +97,12 @@ func integrate(p Project, typePlan string, signatures []string, implementations 
 	a := orchid.New(p.Endpoint, p.Model)
 	a.System("You are a Go developer. You take function implementations and assemble them into a complete, valid, compilable Go package. You decide what files to create, what types are needed, and what imports go where. Output the complete package as a single block with file boundaries marked as '// FILE: filename.go' on their own line. No markdown fences, no explanation.")
 
-	result, _, _ := a.Run(fmt.Sprintf(
+	a.GiveTask(fmt.Sprintf(
 		"Assemble these function implementations into a complete Go package called %s. "+
 			"Add whatever types, structs, constructors, and imports are needed to make it compile. "+
 			"Mark file boundaries with '// FILE: filename.go' lines.\n\n%s",
 		p.Name, parts.String()))
+	result, _, _ := a.Step()
 
 	return result
 }
@@ -132,9 +134,10 @@ func fixCode(p Project, code string, errors string) string {
 	fixer := orchid.New(p.Endpoint, p.Model)
 	fixer.System("You are a Go developer fixing compile errors. Output the complete fixed package. Use '// FILE: filename.go' to mark file boundaries. No markdown fences, no explanation.")
 
-	fixed, _, _ := fixer.Run(fmt.Sprintf(
+	fixer.GiveTask(fmt.Sprintf(
 		"This Go package has compile errors. Fix ALL of them.\n\nISSUES:\n%s\n\nCURRENT CODE:\n%s",
 		errors, code))
+	fixed, _, _ := fixer.Step()
 
 	return fixed
 }

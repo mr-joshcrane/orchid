@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joshc/orchid"
+	"github.com/mr-joshcrane/orchid"
 )
 
 func TestMultiAgentFileSearch(t *testing.T) {

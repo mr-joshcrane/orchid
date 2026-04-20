@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/joshc/orchid"
+	"github.com/mr-joshcrane/orchid"
 )
 
 func main() {
@@ -45,7 +45,8 @@ func simple() {
 	a.Can(orchid.Tool{Name: "read", Description: "Read a file given a path", Handler: readHandler})
 	a.System("You are a helpful assistant. Be concise.")
 
-	result, _, _ := a.Run("Read /tmp/orchid-api/notes.txt and summarize it in one sentence.")
+	a.GiveTask("Read /tmp/orchid-api/notes.txt and summarize it in one sentence.")
+	result, _, _ := a.Step()
 	fmt.Println(result)
 	fmt.Println()
 	orchid.PrintLog(os.Stdout, a.Log())
@@ -56,10 +57,12 @@ func conversation() {
 	a.Can(orchid.Tool{Name: "bash", Description: "Run a shell command", Handler: bashHandler})
 	a.System("You are a sysadmin assistant. Be concise.")
 
-	r1, _, _ := a.Run("How many files are in /tmp/orchid-api/?")
+	a.GiveTask("How many files are in /tmp/orchid-api/?")
+	r1, _, _ := a.Step()
 	fmt.Println("Q1:", r1)
 
-	r2, _, _ := a.Run("What are their names?")
+	a.GiveTask("What are their names?")
+	r2, _, _ := a.Step()
 	fmt.Println("Q2:", r2)
 	fmt.Println()
 	orchid.PrintLog(os.Stdout, a.Log())
@@ -98,7 +101,8 @@ func powerUser() {
 		return true, ""
 	})
 
-	result, _, _ := a.Run("Run: rm -rf /tmp/orchid-api/")
+	a.GiveTask("Run: rm -rf /tmp/orchid-api/")
+	result, _, _ := a.Step()
 	fmt.Println(result)
 	fmt.Println()
 	orchid.PrintLog(os.Stdout, a.Log())
@@ -139,7 +143,8 @@ func storeOrchestration() {
 	planner := orchid.New(endpoint, model)
 	planner.System("You are a Go architect. When asked to design something, respond with ONLY a comma-separated list of function names needed. Nothing else. Example: Get,Set,Delete")
 
-	plan, _, _ := planner.Run("design a key-value store")
+	planner.GiveTask("design a key-value store")
+	plan, _, _ := planner.Step()
 	fmt.Println("Plan:", plan)
 
 	functions := strings.Split(plan, ",")
@@ -169,9 +174,10 @@ func storeOrchestration() {
 	integrator := orchid.New(endpoint, model)
 	integrator.System("You are a Go developer. You receive method implementations and assemble them into a single valid Go source file. Output ONLY valid Go code. No markdown fences, no explanation.")
 
-	assembled, _, _ := integrator.Run(fmt.Sprintf(
+	integrator.GiveTask(fmt.Sprintf(
 		"Assemble these methods into a complete Go file with package store, the KVStore struct with field data map[string]string, a New() constructor, and all methods below:\n\n%s",
 		parts.String()))
+	assembled, _, _ := integrator.Step()
 
 	fmt.Println("\n--- Assembled ---")
 	fmt.Println(assembled)

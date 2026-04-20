@@ -46,7 +46,7 @@ func (a *Agent) System(purpose string) *Agent {
 	return a
 }
 
-func (a *Agent) Run(task string) (string, []EffectResult, error) {
+func (a *Agent) GiveTask(task string) {
 	a.ensureRuntime()
 
 	if a.proc == nil {
@@ -62,6 +62,13 @@ func (a *Agent) Run(task string) (string, []EffectResult, error) {
 	}
 
 	a.rt.Inject(a.proc.ID, task)
+}
+
+func (a *Agent) Step() (string, []EffectResult, error) {
+	a.ensureRuntime()
+	if a.proc == nil {
+		return "", nil, fmt.Errorf("no active process: call GiveTask first")
+	}
 	text, results := a.rt.Step(a.proc.ID)
 	return text, results, nil
 }
@@ -199,7 +206,12 @@ func formatEventData(e Event) string {
 	case EventUserInput:
 		return truncateStr(e.Data["content"], 80)
 	case EventAssistantOutput:
-		return truncateStr(e.Data["content"], 80)
+		pid := e.Data["prompt_id"]
+		content := truncateStr(e.Data["content"], 80)
+		if pid != "" {
+			return fmt.Sprintf("[%s] %s", pid, content)
+		}
+		return content
 	case EventEffectIntent:
 		return fmt.Sprintf("tool=%s %s", e.Data["tool"], truncateArgs(e.Data, "tool", "effect_id"))
 	case EventEffectRejected:

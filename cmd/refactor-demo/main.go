@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/joshc/orchid"
+	"github.com/mr-joshcrane/orchid"
 )
 
 const endpoint = "http://localhost:8080"
@@ -141,7 +141,8 @@ func compileTestLoop(code string, tests string) string {
 
 		a := orchid.New(endpoint, model)
 		a.System("You are a Go developer fixing test compile errors. Output the complete fixed test file. No markdown, no explanation.")
-		fixed, _, _ := a.Run(fmt.Sprintf("Fix these compile errors in the test file:\n\n%s\n\nTEST CODE:\n%s\n\nSOURCE CODE UNDER TEST:\n%s", errors, tests, code))
+		a.GiveTask(fmt.Sprintf("Fix these compile errors in the test file:\n\n%s\n\nTEST CODE:\n%s\n\nSOURCE CODE UNDER TEST:\n%s", errors, tests, code))
+		fixed, _, _ := a.Step()
 		tests = fixed
 		writeFile("todo_test.go", tests)
 	}
@@ -163,7 +164,8 @@ func fixFromFailures(code string, tests string, failures string) string {
 	a := orchid.New(endpoint, model)
 	a.System(`You are a Go developer fixing bugs revealed by failing tests. The tests are correct and the code is wrong. Fix ONLY the source code so all tests pass. Output the complete fixed source file. No markdown, no explanation.`)
 
-	result, _, _ := a.Run(fmt.Sprintf("These test failures indicate bugs in the source code:\n\n%s\n\nSOURCE CODE TO FIX:\n%s", failures, code))
+	a.GiveTask(fmt.Sprintf("These test failures indicate bugs in the source code:\n\n%s\n\nSOURCE CODE TO FIX:\n%s", failures, code))
+	result, _, _ := a.Step()
 	return result
 }
 
@@ -186,7 +188,8 @@ func compileCodeLoop(code string) string {
 
 		a := orchid.New(endpoint, model)
 		a.System("You are a Go developer fixing compile errors. Output the complete fixed file. No markdown, no explanation.")
-		fixed, _, _ := a.Run(fmt.Sprintf("Fix these compile errors:\n\n%s\n\nCODE:\n%s", errors, code))
+		a.GiveTask(fmt.Sprintf("Fix these compile errors:\n\n%s\n\nCODE:\n%s", errors, code))
+		fixed, _, _ := a.Step()
 		code = fixed
 		writeFile("todo.go", code)
 	}

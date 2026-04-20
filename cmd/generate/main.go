@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/joshc/orchid/packgen"
+	"github.com/mr-joshcrane/orchid/packgen"
 )
 
 const endpoint = "http://localhost:8080"

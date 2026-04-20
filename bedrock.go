@@ -63,12 +63,17 @@ func (g *BedrockGenerator) Generate(ctx Context) Proposal {
 	}
 
 	payload, _ := json.Marshal(body)
+	trace := newPromptTrace()
 	raw, err := g.call(payload)
 	if err != nil {
-		return Proposal{Text: fmt.Sprintf("error: %s", err)}
+		trace.save(payload, []byte(err.Error()))
+		return Proposal{Text: fmt.Sprintf("error: %s", err), PromptID: trace.id}
 	}
 
-	return g.parseResponse(raw)
+	trace.save(payload, raw)
+	p := g.parseResponse(raw)
+	p.PromptID = trace.id
+	return p
 }
 
 func (g *BedrockGenerator) buildMessages(ctx Context) []bedrockMessage {

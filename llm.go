@@ -27,15 +27,20 @@ func (g *llmGenerator) Generate(ctx Context) Proposal {
 		body["tools"] = tools
 	}
 	payload, _ := json.Marshal(body)
+	trace := newPromptTrace()
 
 	resp, err := http.Post(g.endpoint+"/v1/chat/completions", "application/json", bytes.NewReader(payload))
 	if err != nil {
-		return Proposal{Text: fmt.Sprintf("error: %s", err)}
+		trace.save(payload, []byte(err.Error()))
+		return Proposal{Text: fmt.Sprintf("error: %s", err), PromptID: trace.id}
 	}
 	defer resp.Body.Close()
 
 	raw, _ := io.ReadAll(resp.Body)
-	return g.parseResponse(raw)
+	trace.save(payload, raw)
+	p := g.parseResponse(raw)
+	p.PromptID = trace.id
+	return p
 }
 
 func (g *llmGenerator) buildMessages(ctx Context) []map[string]string {

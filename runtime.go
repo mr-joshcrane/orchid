@@ -122,7 +122,7 @@ func (r *Runtime) Step(processID string) (string, []EffectResult) {
 	r.Log.Append(Event{
 		Type:      EventAssistantOutput,
 		ProcessID: processID,
-		Data:      map[string]string{"content": proposal.Text},
+		Data:      map[string]string{"content": proposal.Text, "prompt_id": proposal.PromptID},
 	})
 
 	var results []EffectResult

@@ -1,9 +1,18 @@
 package orchid
 
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"os"
+	"path/filepath"
+)
+
 // Proposal is what a Generator returns — text output plus effect intents.
 type Proposal struct {
-	Text    string
-	Effects []ProposedEffect
+	Text     string
+	Effects  []ProposedEffect
+	PromptID string
 }
 
 // ProposedEffect is a tool call the generator wants to make.
@@ -50,4 +59,31 @@ type GeneratorFunc func(Context) Proposal
 
 func (f GeneratorFunc) Generate(ctx Context) Proposal {
 	return f(ctx)
+}
+
+type promptTrace struct {
+	id  string
+	dir string
+}
+
+func newPromptTrace() promptTrace {
+	id := newPromptID()
+	dir := filepath.Join(os.TempDir(), "orchid-prompts")
+	os.MkdirAll(dir, 0o755)
+	return promptTrace{id: id, dir: dir}
+}
+
+func (t promptTrace) save(request, response []byte) {
+	record := map[string]json.RawMessage{
+		"request":  request,
+		"response": response,
+	}
+	data, _ := json.MarshalIndent(record, "", "  ")
+	os.WriteFile(filepath.Join(t.dir, t.id+".json"), data, 0o644)
+}
+
+func newPromptID() string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
