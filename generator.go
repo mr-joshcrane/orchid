@@ -84,7 +84,13 @@ func (t promptTrace) save(request, response []byte) {
 		"response": response,
 	}
 	data, _ := json.MarshalIndent(record, "", "  ")
-	os.WriteFile(filepath.Join(t.dir, t.id+".json"), data, 0o644)
+	tmpFile := filepath.Join(t.dir, t.id+".tmp")
+	finalFile := filepath.Join(t.dir, t.id+".json")
+	err := os.WriteFile(tmpFile, data, 0o644)
+	if err != nil {
+		return
+	}
+	os.Rename(tmpFile, finalFile)
 }
 
 func newPromptID() string {
