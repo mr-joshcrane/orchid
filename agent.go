@@ -23,6 +23,8 @@ type Agent struct {
 	purpose  string
 	rt       *Runtime
 	proc     *Process
+	mu       sync.Mutex
+	usage    TokenUsage
 }
 
 func New(endpoint, model string) *Agent {
@@ -64,12 +66,26 @@ func (a *Agent) GiveTask(task string) {
 	a.rt.Inject(a.proc.ID, task)
 }
 
+func (a *Agent) addUsage(u TokenUsage) {
+	a.mu.Lock()
+	a.usage.InputTokens += u.InputTokens
+	a.usage.OutputTokens += u.OutputTokens
+	a.mu.Unlock()
+}
+
+func (a *Agent) Usage() TokenUsage {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.usage
+}
+
 func (a *Agent) Step() (string, []EffectResult, error) {
 	a.ensureRuntime()
 	if a.proc == nil {
 		return "", nil, fmt.Errorf("no active process: call GiveTask first")
 	}
-	text, results := a.rt.Step(a.proc.ID)
+	text, results, usage := a.rt.Step(a.proc.ID)
+	a.addUsage(usage)
 	return text, results, nil
 }
 
@@ -159,7 +175,8 @@ func (g *Group) Join() ([]string, error) {
 	for i, child := range g.children {
 		go func() {
 			defer wg.Done()
-			text, _ := g.agent.rt.Step(child.ID)
+			text, _, usage := g.agent.rt.Step(child.ID)
+			g.agent.addUsage(usage)
 			collected[i] = childResult{index: i, text: text}
 		}()
 	}

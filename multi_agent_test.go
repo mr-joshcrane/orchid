@@ -67,7 +67,7 @@ func TestMultiAgentFileSearch(t *testing.T) {
 		rt.Inject(child.ID, fmt.Sprintf("check %s for %s", filename, searchTerm))
 		rt.Step(child.ID)
 
-		text, _ := rt.Step(child.ID)
+		text, _, _ := rt.Step(child.ID)
 
 		found := text == "FOUND"
 		results = append(results, childResult{file: filename, found: found})
@@ -150,7 +150,7 @@ func TestMultiAgentStoreImplementation(t *testing.T) {
 		nil, "",
 	)
 	rt.Inject(planner.ID, "design a key-value store")
-	planText, _ := rt.Step(planner.ID)
+	planText, _, _ := rt.Step(planner.ID)
 
 	functions := strings.Split(planText, ",")
 	if len(functions) != 3 {
@@ -170,7 +170,7 @@ func TestMultiAgentStoreImplementation(t *testing.T) {
 		}
 
 		rt.Inject(child.ID, fmt.Sprintf("implement %s", fn))
-		text, _ := rt.Step(child.ID)
+		text, _, _ := rt.Step(child.ID)
 		rt.Join(planner.ID, child.ID, text)
 		implementations = append(implementations, text)
 	}

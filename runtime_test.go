@@ -153,7 +153,7 @@ func TestRuntime_Step_NoEffects(t *testing.T) {
 	p := rt.Spawn(ProcessSpec{Name: "thinker"}, nil, "")
 	rt.Inject(p.ID, "what?")
 
-	text, results := rt.Step(p.ID)
+	text, results, _ := rt.Step(p.ID)
 
 	if text != "thinking" {
 		t.Fatalf("text = %q, want %q", text, "thinking")
@@ -184,7 +184,7 @@ func TestRuntime_Step_EffectAdmittedAndExecuted(t *testing.T) {
 	p := rt.Spawn(ProcessSpec{Name: "reader"}, []Capability{"read"}, "")
 	rt.Inject(p.ID, "read it")
 
-	_, results := rt.Step(p.ID)
+	_, results, _ := rt.Step(p.ID)
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
@@ -209,7 +209,7 @@ func TestRuntime_Step_EffectRejectedByCapability(t *testing.T) {
 	p := rt.Spawn(ProcessSpec{Name: "reader"}, []Capability{CapRead}, "")
 	rt.Inject(p.ID, "go")
 
-	_, results := rt.Step(p.ID)
+	_, results, _ := rt.Step(p.ID)
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
@@ -240,7 +240,7 @@ func TestRuntime_Step_EffectRejectedByPolicy(t *testing.T) {
 	p := rt.Spawn(ProcessSpec{Name: "reader"}, []Capability{"read"}, "")
 	rt.Inject(p.ID, "go")
 
-	_, results := rt.Step(p.ID)
+	_, results, _ := rt.Step(p.ID)
 
 	if results[0].Admitted {
 		t.Fatal("policy should reject")
@@ -261,7 +261,7 @@ func TestRuntime_Step_NoHandler(t *testing.T) {
 	p := rt.Spawn(ProcessSpec{Name: "test"}, []Capability{"unknown"}, "")
 	rt.Inject(p.ID, "go")
 
-	_, results := rt.Step(p.ID)
+	_, results, _ := rt.Step(p.ID)
 
 	// admitted (has capability) but error (no handler)
 	if !results[0].Admitted {
@@ -274,7 +274,7 @@ func TestRuntime_Step_NoHandler(t *testing.T) {
 
 func TestRuntime_Step_MissingProcess(t *testing.T) {
 	rt := NewRuntime(nopGenerator())
-	text, results := rt.Step("nonexistent")
+	text, results, _ := rt.Step("nonexistent")
 
 	if text != "" || results != nil {
 		t.Fatal("step on missing process should return empty")

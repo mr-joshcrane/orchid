@@ -8,13 +8,21 @@ import (
 	"path/filepath"
 )
 
+// TokenUsage records input/output token counts from a single LLM call.
+type TokenUsage struct {
+	InputTokens  int
+	OutputTokens int
+}
+
 // Proposal is what a Generator returns — text output plus effect intents.
 type Proposal struct {
-	Text       string
-	Effects    []ProposedEffect
-	PromptID   string
-	RawMessage string
-	History    any
+	Text         string
+	Effects      []ProposedEffect
+	PromptID     string
+	RawMessage   string
+	History      any
+	InputTokens  int
+	OutputTokens int
 }
 
 // ProposedEffect is a tool call the generator wants to make.

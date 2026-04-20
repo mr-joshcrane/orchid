@@ -149,43 +149,6 @@ func resp2msg(p Proposal) bedrockMessage {
 	return bedrockMessage{Role: "assistant", Content: content}
 }
 
-func compactHistory(history []bedrockMessage) {
-	for i := 0; i < len(history)-2; i++ {
-		msg := &history[i]
-		if msg.Role != "user" {
-			continue
-		}
-		hasToolResult := false
-		for j := range msg.Content {
-			if msg.Content[j].ToolResult != nil {
-				hasToolResult = true
-			}
-		}
-		if !hasToolResult {
-			continue
-		}
-		if i+1 >= len(history) || history[i+1].Role != "assistant" {
-			continue
-		}
-		var summary string
-		for _, c := range history[i+1].Content {
-			if c.Text != nil {
-				summary = *c.Text
-			}
-		}
-		if summary == "" {
-			continue
-		}
-		for j := range msg.Content {
-			tr := msg.Content[j].ToolResult
-			if tr == nil {
-				continue
-			}
-			tr.Content = []bedrockTextBlock{{Text: summary}}
-		}
-	}
-}
-
 func (g *BedrockGenerator) buildTools(tools []ToolDefinition) []bedrockTool {
 	if len(tools) == 0 {
 		return nil
@@ -275,7 +238,7 @@ func (g *BedrockGenerator) parseResponse(raw []byte) Proposal {
 		}
 	}
 
-	return Proposal{Text: text, Effects: effects, RawMessage: string(rawMsg)}
+	return Proposal{Text: text, Effects: effects, RawMessage: string(rawMsg), InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens}
 }
 
 // Bedrock Converse API types.
@@ -341,6 +304,13 @@ type bedrockInputSchema struct {
 type bedrockResponse struct {
 	Output     bedrockOutput `json:"output"`
 	StopReason string        `json:"stopReason"`
+	Usage      bedrockUsage  `json:"usage"`
+}
+
+type bedrockUsage struct {
+	InputTokens  int `json:"inputTokens"`
+	OutputTokens int `json:"outputTokens"`
+	TotalTokens  int `json:"totalTokens"`
 }
 
 type bedrockOutput struct {
