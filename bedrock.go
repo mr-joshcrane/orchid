@@ -165,8 +165,17 @@ func compactHistory(history []bedrockMessage) {
 		if !hasToolResult {
 			continue
 		}
-		nextIsAssistant := i+1 < len(history) && history[i+1].Role == "assistant"
-		if !nextIsAssistant {
+		if i+1 >= len(history) || history[i+1].Role != "assistant" {
+			continue
+		}
+		assistantMsg := history[i+1]
+		hasText := false
+		for _, c := range assistantMsg.Content {
+			if c.Text != nil && len(*c.Text) > 20 {
+				hasText = true
+			}
+		}
+		if !hasText {
 			continue
 		}
 		for j := range msg.Content {
@@ -174,7 +183,14 @@ func compactHistory(history []bedrockMessage) {
 			if tr == nil {
 				continue
 			}
-			tr.Content = []bedrockTextBlock{{Text: "(see assistant response below)"}}
+			totalLen := 0
+			for _, tb := range tr.Content {
+				totalLen += len(tb.Text)
+			}
+			if totalLen < 500 {
+				continue
+			}
+			tr.Content = []bedrockTextBlock{{Text: "(see assistant analysis below)"}}
 		}
 	}
 }

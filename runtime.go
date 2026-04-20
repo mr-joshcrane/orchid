@@ -2,6 +2,8 @@ package orchid
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 	"sync/atomic"
 )
 
@@ -148,6 +150,14 @@ type EffectResult struct {
 }
 
 func (r *Runtime) processEffect(p *Process, pe ProposedEffect) EffectResult {
+	cacheKey := effectCacheKey(pe)
+	if p.EffectCache != nil {
+		if cached, ok := p.EffectCache[cacheKey]; ok {
+			cached.ToolUseID = pe.ToolUseID
+			return cached
+		}
+	}
+
 	eff := &Effect{
 		ID:        r.newEffectID(),
 		ProcessID: p.ID,
@@ -211,7 +221,7 @@ func (r *Runtime) processEffect(p *Process, pe ProposedEffect) EffectResult {
 		Data:      map[string]string{"effect_id": eff.ID, "tool": pe.Tool},
 	})
 
-	result, err := handler(pe.Args)
+	handlerResult, err := handler(pe.Args)
 	if err != nil {
 		eff.State = EffectRejected
 		eff.Result = err.Error()
@@ -224,11 +234,11 @@ func (r *Runtime) processEffect(p *Process, pe ProposedEffect) EffectResult {
 	}
 
 	eff.State = EffectObserved
-	eff.Result = result
+	eff.Result = handlerResult
 	r.Log.Append(Event{
 		Type:      EventEffectObserved,
 		ProcessID: p.ID,
-		Data:      map[string]string{"effect_id": eff.ID, "tool": pe.Tool, "result": result},
+		Data:      map[string]string{"effect_id": eff.ID, "tool": pe.Tool, "result": handlerResult},
 	})
 
 	eff.State = EffectApplied
@@ -238,7 +248,25 @@ func (r *Runtime) processEffect(p *Process, pe ProposedEffect) EffectResult {
 		Data:      map[string]string{"effect_id": eff.ID, "tool": pe.Tool},
 	})
 
-	return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: true, Result: result}
+	er := EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: true, Result: handlerResult}
+	if p.EffectCache == nil {
+		p.EffectCache = make(map[string]EffectResult)
+	}
+	p.EffectCache[cacheKey] = er
+	return er
+}
+
+func effectCacheKey(pe ProposedEffect) string {
+	keys := make([]string, 0, len(pe.Args))
+	for k := range pe.Args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var parts []string
+	for _, k := range keys {
+		parts = append(parts, k+"="+pe.Args[k])
+	}
+	return pe.Tool + ":" + strings.Join(parts, "&")
 }
 
 func mergeMap(base, overlay map[string]string) map[string]string {

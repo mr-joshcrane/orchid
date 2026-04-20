@@ -50,6 +50,7 @@ type Process struct {
 	Tools          []ToolDefinition
 	History        any
 	PendingResults []EffectResult
+	EffectCache    map[string]EffectResult
 }
 
 func (p *Process) HasCapability(c Capability) bool {
