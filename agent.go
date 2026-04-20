@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 )
@@ -131,11 +132,28 @@ type Group struct {
 }
 
 func (g *Group) Join() ([]string, error) {
-	var results []string
-	for _, child := range g.children {
-		text, _ := g.agent.rt.Step(child.ID)
-		g.agent.rt.Join(g.agent.proc.ID, child.ID, text)
-		results = append(results, text)
+	type childResult struct {
+		index int
+		text  string
+	}
+
+	collected := make([]childResult, len(g.children))
+	var wg sync.WaitGroup
+	wg.Add(len(g.children))
+
+	for i, child := range g.children {
+		go func() {
+			defer wg.Done()
+			text, _ := g.agent.rt.Step(child.ID)
+			collected[i] = childResult{index: i, text: text}
+		}()
+	}
+	wg.Wait()
+
+	results := make([]string, len(g.children))
+	for _, cr := range collected {
+		g.agent.rt.Join(g.agent.proc.ID, g.children[cr.index].ID, cr.text)
+		results[cr.index] = cr.text
 	}
 	return results, nil
 }
