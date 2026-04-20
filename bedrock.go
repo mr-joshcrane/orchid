@@ -84,7 +84,6 @@ func (g *BedrockGenerator) Generate(ctx Context) Proposal {
 	}
 
 	tools := g.buildTools(ctx.Tools)
-	compactHistory(history)
 	body := bedrockRequest{
 		Messages: history,
 		System:   []bedrockTextBlock{{Text: ctx.Spec.SystemPrompt}},

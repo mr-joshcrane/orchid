@@ -136,11 +136,44 @@ func (r *Runtime) Step(processID string) (string, []EffectResult) {
 	}
 
 	p.PendingResults = results
+
+	if len(results) > 0 {
+		r.summariseResults(p)
+	}
+
 	p.State = ProcessWaiting
 	return proposal.Text, results
 }
 
-// EffectResult captures the outcome of processing one proposed effect.
+func (r *Runtime) summariseResults(p *Process) {
+	task := r.getOriginalTask(p)
+	for i := range p.PendingResults {
+		result := &p.PendingResults[i]
+		if result.Result == "" || len(result.Result) < 200 {
+			continue
+		}
+		ctx := Context{
+			Spec: ProcessSpec{SystemPrompt: "Extract the key findings from this tool output that are relevant to the task. Include file paths, versions, line numbers, and specific values. One to three sentences max."},
+			Events: []Event{{
+				Type: EventUserInput,
+				Data: map[string]string{"content": fmt.Sprintf("Task: %s\n\nTool: %s\nOutput:\n%s", task, result.Tool, result.Result)},
+			}},
+		}
+		summary := r.Generator.Generate(ctx)
+		result.Result = summary.Text
+	}
+}
+
+func (r *Runtime) getOriginalTask(p *Process) string {
+	events := visibleEvents(p)
+	for _, e := range events {
+		if e.Type == EventUserInput {
+			return e.Data["content"]
+		}
+	}
+	return ""
+}
+
 type EffectResult struct {
 	Tool      string
 	ToolUseID string
