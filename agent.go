@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,7 +24,7 @@ type Agent struct {
 	gen     Generator
 	tools   []Tool
 	purpose string
-	rt      *Runtime
+	wf      *Workflow
 	proc    *Process
 	mu      sync.Mutex
 	usage   TokenUsage
@@ -30,6 +32,10 @@ type Agent struct {
 
 func New(gen Generator) *Agent {
 	return &Agent{gen: gen}
+}
+
+func (w *Workflow) New(gen Generator) *Agent {
+	return &Agent{gen: gen, wf: w}
 }
 
 func NewBedrockAgent(model string) (*Agent, error) {
@@ -55,21 +61,22 @@ func (a *Agent) System(purpose string) *Agent {
 }
 
 func (a *Agent) GiveTask(task string) {
-	a.ensureRuntime()
+	a.ensureWorkflow()
 
 	if a.proc == nil {
 		caps := make([]Capability, len(a.tools))
 		for i, t := range a.tools {
 			caps[i] = Capability(t.Name)
 		}
-		a.proc = a.rt.Spawn(ProcessSpec{
+		a.proc = a.wf.Spawn(ProcessSpec{
 			Name:         "agent",
 			SystemPrompt: a.purpose,
 		}, caps, "")
+		a.proc.Generator = a.gen
 		a.proc.Tools = a.toolDefs()
 	}
 
-	a.rt.Inject(a.proc.ID, task)
+	a.wf.Inject(a.proc.ID, task)
 }
 
 func (a *Agent) addUsage(u TokenUsage) {
@@ -90,20 +97,20 @@ func (a *Agent) Step() (string, []EffectResult, error) {
 }
 
 func (a *Agent) StepWithContext(ctx context.Context) (string, []EffectResult, error) {
-	a.ensureRuntime()
+	a.ensureWorkflow()
 	if a.proc == nil {
 		return "", nil, fmt.Errorf("no active process: call GiveTask first")
 	}
-	text, results, usage := a.rt.Step(ctx, a.proc.ID)
+	text, results, usage := a.wf.Step(ctx, a.proc.ID)
 	a.addUsage(usage)
 	return text, results, nil
 }
 
 func (a *Agent) Fork(prompts ...string) *Group {
-	a.ensureRuntime()
+	a.ensureWorkflow()
 
 	if a.proc == nil {
-		a.proc = a.rt.Spawn(ProcessSpec{
+		a.proc = a.wf.Spawn(ProcessSpec{
 			Name:         "coordinator",
 			SystemPrompt: a.purpose,
 		}, nil, "")
@@ -117,24 +124,25 @@ func (a *Agent) Fork(prompts ...string) *Group {
 	defs := a.toolDefs()
 	var children []*Process
 	for i, prompt := range prompts {
-		child := a.rt.Fork(a.proc.ID, ProcessSpec{
+		child := a.wf.Fork(a.proc.ID, ProcessSpec{
 			Name:         fmt.Sprintf("worker-%d", i),
 			SystemPrompt: a.purpose,
 		}, caps)
 
+		child.Generator = a.gen
 		child.Tools = defs
 		child.View.Filter = func(e Event) bool {
 			return e.ProcessID == child.ID
 		}
 
-		a.rt.Inject(child.ID, prompt)
+		a.wf.Inject(child.ID, prompt)
 		children = append(children, child)
 	}
 
 	return &Group{
 		agent:    a,
 		children: children,
-		rt:       a.rt,
+		wf:       a.wf,
 		parentID: a.proc.ID,
 		maxSteps: 50,
 	}
@@ -145,10 +153,10 @@ func ForkAgents(agents ...*Agent) *Group {
 		return &Group{maxSteps: 50}
 	}
 
-	agents[0].ensureRuntime()
-	rt := agents[0].rt
+	agents[0].ensureWorkflow()
+	wf := agents[0].wf
 
-	coordinator := rt.Spawn(ProcessSpec{Name: "coordinator"}, nil, "")
+	coordinator := wf.Spawn(ProcessSpec{Name: "coordinator"}, nil, "")
 
 	var children []*Process
 	for i, a := range agents {
@@ -157,11 +165,12 @@ func ForkAgents(agents ...*Agent) *Group {
 			caps[j] = Capability(t.Name)
 		}
 
-		child := rt.Fork(coordinator.ID, ProcessSpec{
+		child := wf.Fork(coordinator.ID, ProcessSpec{
 			Name:         fmt.Sprintf("agent-%d", i),
 			SystemPrompt: a.purpose,
 		}, caps)
 
+		child.Generator = a.gen
 		child.Tools = a.toolDefs()
 		child.Handlers = make(map[string]EffectHandler, len(a.tools))
 		for _, t := range a.tools {
@@ -173,10 +182,10 @@ func ForkAgents(agents ...*Agent) *Group {
 		}
 
 		if a.proc != nil {
-			events := a.rt.Log.All()
+			events := a.wf.Log.All()
 			for j := len(events) - 1; j >= 0; j-- {
 				if events[j].ProcessID == a.proc.ID && events[j].Type == EventUserInput {
-					rt.Inject(child.ID, events[j].Data["content"])
+					wf.Inject(child.ID, events[j].Data["content"])
 					break
 				}
 			}
@@ -188,24 +197,23 @@ func ForkAgents(agents ...*Agent) *Group {
 	return &Group{
 		agent:    agents[0],
 		children: children,
-		rt:       rt,
+		wf:       wf,
 		parentID: coordinator.ID,
 		maxSteps: 50,
 	}
 }
 
-func (a *Agent) Rt() *Runtime {
-	a.ensureRuntime()
-	return a.rt
-}
-
-func (a *Agent) ensureRuntime() {
-	if a.rt != nil {
+func (a *Agent) ensureWorkflow() {
+	if a.wf != nil {
 		return
 	}
-	a.rt = NewRuntime(a.gen)
+	a.wf = &Workflow{
+		Log:       NewEventLog(),
+		Processes: NewProcessTable(),
+		Effects:   NewEffectTable(),
+	}
 	for _, t := range a.tools {
-		a.rt.Effects.RegisterHandler(t.Name, t.Handler)
+		a.wf.Effects.RegisterHandler(t.Name, t.Handler)
 	}
 }
 
@@ -227,7 +235,7 @@ type Result struct {
 type Group struct {
 	agent    *Agent
 	children []*Process
-	rt       *Runtime
+	wf       *Workflow
 	parentID string
 	maxSteps int
 	onStep   StepCallback
@@ -255,11 +263,11 @@ func (g *Group) Stream() <-chan Result {
 				}
 			}()
 
-			text, usage, err := g.rt.StepUntilDone(context.Background(), child.ID, g.maxSteps, g.onStep)
+			text, usage, err := g.wf.StepUntilDone(context.Background(), child.ID, g.maxSteps, g.onStep)
 			if g.agent != nil {
 				g.agent.addUsage(usage)
 			}
-			g.rt.Join(g.parentID, child.ID, text, usage)
+			g.wf.Join(g.parentID, child.ID, text, usage)
 			ch <- Result{Index: i, Text: text, Usage: usage, Err: err}
 		}()
 	}
@@ -288,18 +296,10 @@ func (g *Group) Join() ([]Result, error) {
 
 // Log returns all events from this agent's runtime.
 func (a *Agent) Log() []Event {
-	if a.rt == nil {
+	if a.wf == nil {
 		return nil
 	}
-	return a.rt.Log.All()
-}
-
-func (a *Agent) WriteLog(w io.Writer) error {
-	if a.rt == nil {
-		return nil
-	}
-	_, err := a.rt.Log.WriteTo(w)
-	return err
+	return a.wf.Log.All()
 }
 
 // PrintLog writes a human-readable audit trail of events.
@@ -527,4 +527,50 @@ func printNode(w io.Writer, node *ProcessNode, prefix string, isLast bool) {
 	for i, child := range node.Children {
 		printNode(w, child, childPrefix, i == len(node.Children)-1)
 	}
+}
+
+func File(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func Folder(root string, includeFilter ...string) (string, error) {
+	var contents strings.Builder
+	var walkErr error
+	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			walkErr = err
+			return nil
+		}
+		if info.IsDir() {
+			if strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if len(includeFilter) > 0 {
+			matched := false
+			for _, f := range includeFilter {
+				if strings.Contains(info.Name(), f) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return nil
+			}
+		}
+		data, err := File(path)
+		if err != nil {
+			walkErr = err
+			return nil
+		}
+		contents.WriteString(data)
+		contents.WriteByte('\n')
+		return nil
+	})
+	return contents.String(), walkErr
 }

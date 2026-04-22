@@ -2,7 +2,10 @@ package orchid
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -10,41 +13,108 @@ import (
 	"time"
 )
 
-// Runtime is the orchestration kernel.
-type Runtime struct {
-	Log       *EventLog
-	Processes *ProcessTable
-	Effects   *EffectTable
-	Generator Generator
-	nextPID   atomic.Uint64
+var DefaultLogDir string
+
+func init() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = os.TempDir()
+	}
+	DefaultLogDir = filepath.Join(home, ".orchid", "logs")
 }
 
-func NewRuntime(gen Generator) *Runtime {
-	return &Runtime{
+type Workflow struct {
+	Log              *EventLog
+	Processes        *ProcessTable
+	Effects          *EffectTable
+	DefaultGenerator Generator
+	nextPID          atomic.Uint64
+	logCh            chan Event
+	done             chan struct{}
+}
+
+func NewWorkflow() *Workflow {
+	wf := &Workflow{
 		Log:       NewEventLog(),
 		Processes: NewProcessTable(),
 		Effects:   NewEffectTable(),
-		Generator: gen,
+	}
+	wf.startLogWriter()
+	wf.Log.listener = wf.logCh
+	return wf
+}
+
+func NewRuntime(gen Generator) *Workflow {
+	wf := NewWorkflow()
+	wf.DefaultGenerator = gen
+	return wf
+}
+
+func (w *Workflow) Quiet() {
+	w.Log.listener = nil
+}
+
+func (w *Workflow) Close() {
+	w.Log.listener = nil
+	if w.logCh != nil {
+		close(w.logCh)
+		<-w.done
+		w.logCh = nil
 	}
 }
 
-func (r *Runtime) newProcessID() string {
-	return fmt.Sprintf("proc_%d", r.nextPID.Add(1))
+func (w *Workflow) startLogWriter() {
+	if DefaultLogDir == "" {
+		return
+	}
+	err := os.MkdirAll(DefaultLogDir, 0o755)
+	if err != nil {
+		return
+	}
+	name := fmt.Sprintf("%s.jsonl", time.Now().Format("2006-01-02T15-04-05.000"))
+	f, err := os.Create(filepath.Join(DefaultLogDir, name))
+	if err != nil {
+		return
+	}
+
+	w.logCh = make(chan Event, 1000)
+	w.done = make(chan struct{})
+
+	go func() {
+		defer f.Close()
+		defer close(w.done)
+		for e := range w.logCh {
+			data, err := json.Marshal(eventRecord{
+				ID:        e.ID,
+				Type:      e.Type.String(),
+				Timestamp: e.Timestamp,
+				ProcessID: e.ProcessID,
+				Data:      e.Data,
+			})
+			if err != nil {
+				continue
+			}
+			f.Write(append(data, '\n'))
+		}
+	}()
 }
 
-func (r *Runtime) newEffectID() string {
-	return fmt.Sprintf("eff_%d", r.nextPID.Add(1))
+func (w *Workflow) newProcessID() string {
+	return fmt.Sprintf("proc_%d", w.nextPID.Add(1))
 }
 
-// Spawn creates a new process and registers it.
-func (r *Runtime) Spawn(spec ProcessSpec, caps []Capability, parentID string) *Process {
+func (w *Workflow) newEffectID() string {
+	return fmt.Sprintf("eff_%d", w.nextPID.Add(1))
+}
+
+func (w *Workflow) Spawn(spec ProcessSpec, caps []Capability, parentID string) *Process {
 	p := &Process{
-		ID:           r.newProcessID(),
+		ID:           w.newProcessID(),
 		Spec:         spec,
 		Capabilities: make(map[Capability]bool),
 		View: LogView{
-			Source:   r.Log,
-			StartCut: uint64(r.Log.Len()),
+			Source:   w.Log,
+			StartCut: uint64(w.Log.Len()),
 		},
 		State:    ProcessReady,
 		ParentID: parentID,
@@ -53,8 +123,8 @@ func (r *Runtime) Spawn(spec ProcessSpec, caps []Capability, parentID string) *P
 		p.Capabilities[c] = true
 	}
 
-	r.Processes.Add(p)
-	r.Log.Append(Event{
+	w.Processes.Add(p)
+	w.Log.Append(Event{
 		Type:      EventProcessSpawned,
 		ProcessID: p.ID,
 		Data: map[string]string{
@@ -67,13 +137,12 @@ func (r *Runtime) Spawn(spec ProcessSpec, caps []Capability, parentID string) *P
 	return p
 }
 
-// Fork creates a child process that sees the parent's log from the fork point.
-func (r *Runtime) Fork(parentID string, childSpec ProcessSpec, caps []Capability) *Process {
-	child := r.Spawn(childSpec, caps, parentID)
+func (w *Workflow) Fork(parentID string, childSpec ProcessSpec, caps []Capability) *Process {
+	child := w.Spawn(childSpec, caps, parentID)
 	child.View.StartCut = 0
-	child.View.Source = r.Log
+	child.View.Source = w.Log
 
-	r.Log.Append(Event{
+	w.Log.Append(Event{
 		Type:      EventFork,
 		ProcessID: parentID,
 		Data:      map[string]string{"child_id": child.ID},
@@ -81,9 +150,8 @@ func (r *Runtime) Fork(parentID string, childSpec ProcessSpec, caps []Capability
 	return child
 }
 
-// Join imports a child process's result into the parent's log.
-func (r *Runtime) Join(parentID string, childID string, result string, usage TokenUsage) {
-	r.Log.Append(Event{
+func (w *Workflow) Join(parentID string, childID string, result string, usage TokenUsage) {
+	w.Log.Append(Event{
 		Type:      EventJoin,
 		ProcessID: parentID,
 		Data: map[string]string{
@@ -94,38 +162,34 @@ func (r *Runtime) Join(parentID string, childID string, result string, usage Tok
 		},
 	})
 
-	child := r.Processes.Get(childID)
+	child := w.Processes.Get(childID)
 	if child != nil {
 		child.State = ProcessDone
-		r.Log.Append(Event{
+		w.Log.Append(Event{
 			Type:      EventProcessExited,
 			ProcessID: childID,
 		})
 	}
 }
 
-// Inject adds a user input event to the log for a process.
-func (r *Runtime) Inject(processID string, input string) {
-	r.Log.Append(Event{
+func (w *Workflow) Inject(processID string, input string) {
+	w.Log.Append(Event{
 		Type:      EventUserInput,
 		ProcessID: processID,
 		Data:      map[string]string{"content": input},
 	})
 }
 
-// Send delivers a message from one process to another.
-func (r *Runtime) Send(from, to, content string) {
-	r.Log.Append(Event{
+func (w *Workflow) Send(from, to, content string) {
+	w.Log.Append(Event{
 		Type:      EventMessage,
 		ProcessID: to,
 		Data:      map[string]string{"from": from, "content": content},
 	})
 }
 
-// Step runs one generate-then-execute cycle for a process.
-// Returns the proposal text and any effect results.
-func (r *Runtime) Step(ctx context.Context, processID string) (string, []EffectResult, TokenUsage) {
-	p := r.Processes.Get(processID)
+func (w *Workflow) Step(ctx context.Context, processID string) (string, []EffectResult, TokenUsage) {
+	p := w.Processes.Get(processID)
 	if p == nil {
 		return "", nil, TokenUsage{}
 	}
@@ -133,13 +197,18 @@ func (r *Runtime) Step(ctx context.Context, processID string) (string, []EffectR
 
 	orchidCtx := BuildContext(p)
 	orchidCtx.Ctx = ctx
-	proposal := r.Generator.Generate(orchidCtx)
+
+	gen := p.Generator
+	if gen == nil {
+		gen = w.DefaultGenerator
+	}
+	proposal := gen.Generate(orchidCtx)
 
 	p.History = proposal.History
 	p.Usage.InputTokens += proposal.InputTokens
 	p.Usage.OutputTokens += proposal.OutputTokens
 
-	r.Log.Append(Event{
+	w.Log.Append(Event{
 		Type:      EventAssistantOutput,
 		ProcessID: processID,
 		Data: map[string]string{
@@ -153,7 +222,7 @@ func (r *Runtime) Step(ctx context.Context, processID string) (string, []EffectR
 
 	var results []EffectResult
 	for _, pe := range proposal.Effects {
-		result := r.processEffect(p, pe)
+		result := w.processEffect(p, pe)
 		results = append(results, result)
 	}
 
@@ -165,12 +234,12 @@ func (r *Runtime) Step(ctx context.Context, processID string) (string, []EffectR
 
 type StepCallback func(step int, text string, results []EffectResult) (inject string, stop bool)
 
-func (r *Runtime) StepUntilDone(ctx context.Context, processID string, maxSteps int, onStep StepCallback) (string, TokenUsage, error) {
+func (w *Workflow) StepUntilDone(ctx context.Context, processID string, maxSteps int, onStep StepCallback) (string, TokenUsage, error) {
 	var totalUsage TokenUsage
 	var lastText string
 
 	for step := 0; step < maxSteps; step++ {
-		text, results, usage := r.Step(ctx, processID)
+		text, results, usage := w.Step(ctx, processID)
 		totalUsage.InputTokens += usage.InputTokens
 		totalUsage.OutputTokens += usage.OutputTokens
 		lastText = text
@@ -193,10 +262,10 @@ func (r *Runtime) StepUntilDone(ctx context.Context, processID string, maxSteps 
 
 		inject, stop := onStep(step, text, results)
 		if inject != "" {
-			r.Inject(processID, inject)
+			w.Inject(processID, inject)
 		}
 		if stop {
-			text, _, usage = r.Step(ctx, processID)
+			text, _, usage = w.Step(ctx, processID)
 			totalUsage.InputTokens += usage.InputTokens
 			totalUsage.OutputTokens += usage.OutputTokens
 			lastText = text
@@ -215,7 +284,7 @@ type EffectResult struct {
 	Error     string
 }
 
-func (r *Runtime) processEffect(p *Process, pe ProposedEffect) EffectResult {
+func (w *Workflow) processEffect(p *Process, pe ProposedEffect) EffectResult {
 	cacheKey := effectCacheKey(pe)
 	if p.EffectCache != nil {
 		if cached, ok := p.EffectCache[cacheKey]; ok {
@@ -225,25 +294,25 @@ func (r *Runtime) processEffect(p *Process, pe ProposedEffect) EffectResult {
 	}
 
 	eff := &Effect{
-		ID:        r.newEffectID(),
+		ID:        w.newEffectID(),
 		ProcessID: p.ID,
 		Tool:      pe.Tool,
 		Args:      pe.Args,
 		State:     EffectPlanned,
 	}
 
-	intentEventID := r.Log.Append(Event{
+	intentEventID := w.Log.Append(Event{
 		Type:      EventEffectIntent,
 		ProcessID: p.ID,
 		Data:      mergeMap(map[string]string{"tool": pe.Tool, "effect_id": eff.ID}, pe.Args),
 	})
 	eff.EventID = intentEventID
-	r.Effects.Track(eff)
+	w.Effects.Track(eff)
 
 	if !p.HasCapability(Capability(pe.Tool)) {
 		eff.State = EffectRejected
 		reason := fmt.Sprintf("process lacks capability: %s", pe.Tool)
-		r.Log.Append(Event{
+		w.Log.Append(Event{
 			Type:      EventEffectRejected,
 			ProcessID: p.ID,
 			Data:      map[string]string{"effect_id": eff.ID, "reason": reason},
@@ -251,9 +320,9 @@ func (r *Runtime) processEffect(p *Process, pe ProposedEffect) EffectResult {
 		return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: false, Error: reason}
 	}
 
-	if ok, reason := r.Effects.CheckPolicies(p, eff); !ok {
+	if ok, reason := w.Effects.CheckPolicies(p, eff); !ok {
 		eff.State = EffectRejected
-		r.Log.Append(Event{
+		w.Log.Append(Event{
 			Type:      EventEffectRejected,
 			ProcessID: p.ID,
 			Data:      map[string]string{"effect_id": eff.ID, "reason": reason},
@@ -265,12 +334,12 @@ func (r *Runtime) processEffect(p *Process, pe ProposedEffect) EffectResult {
 
 	handler, ok := p.GetHandler(pe.Tool)
 	if !ok {
-		handler, ok = r.Effects.GetHandler(pe.Tool)
+		handler, ok = w.Effects.GetHandler(pe.Tool)
 	}
 	if !ok {
 		eff.State = EffectRejected
 		reason := fmt.Sprintf("no handler for tool: %s", pe.Tool)
-		r.Log.Append(Event{
+		w.Log.Append(Event{
 			Type:      EventEffectRejected,
 			ProcessID: p.ID,
 			Data:      map[string]string{"effect_id": eff.ID, "reason": reason},
@@ -287,7 +356,7 @@ func (r *Runtime) processEffect(p *Process, pe ProposedEffect) EffectResult {
 	if err != nil {
 		eff.State = EffectRejected
 		eff.Result = err.Error()
-		r.Log.Append(Event{
+		w.Log.Append(Event{
 			Type:      EventEffectRejected,
 			ProcessID: p.ID,
 			Data:      map[string]string{"effect_id": eff.ID, "reason": err.Error(), "duration_ms": strconv.FormatInt(duration.Milliseconds(), 10)},
@@ -297,7 +366,7 @@ func (r *Runtime) processEffect(p *Process, pe ProposedEffect) EffectResult {
 
 	eff.State = EffectObserved
 	eff.Result = handlerResult
-	r.Log.Append(Event{
+	w.Log.Append(Event{
 		Type:      EventEffectObserved,
 		ProcessID: p.ID,
 		Data: map[string]string{

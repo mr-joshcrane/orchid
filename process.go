@@ -42,6 +42,7 @@ const (
 type Process struct {
 	ID             string
 	Spec           ProcessSpec
+	Generator      Generator
 	Capabilities   map[Capability]bool
 	View           LogView
 	State          ProcessState

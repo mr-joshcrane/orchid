@@ -10,6 +10,11 @@ import (
 	"github.com/mr-joshcrane/orchid"
 )
 
+func TestMain(m *testing.M) {
+	orchid.DefaultLogDir = ""
+	m.Run()
+}
+
 func TestMultiAgentFileSearch(t *testing.T) {
 	files := map[string]string{
 		"file_00.txt": "the quick brown fox",

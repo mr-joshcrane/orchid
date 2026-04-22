@@ -48,16 +48,16 @@ type Event struct {
 
 // EventLog is an append-only, concurrency-safe log.
 type EventLog struct {
-	mu     sync.RWMutex
-	events []Event
-	nextID uint64
+	mu       sync.RWMutex
+	events   []Event
+	nextID   uint64
+	listener chan<- Event
 }
 
 func NewEventLog() *EventLog {
 	return &EventLog{}
 }
 
-// Append adds an event and returns its assigned ID.
 func (l *EventLog) Append(e Event) uint64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -65,6 +65,12 @@ func (l *EventLog) Append(e Event) uint64 {
 	e.Timestamp = time.Now()
 	l.events = append(l.events, e)
 	l.nextID++
+	if l.listener != nil {
+		select {
+		case l.listener <- e:
+		default:
+		}
+	}
 	return e.ID
 }
 
