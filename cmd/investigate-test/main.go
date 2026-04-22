@@ -85,7 +85,7 @@ func investigateRepo(gen *orchid.BedrockGenerator, repo, vuln, pkg, desc string)
 		return result{repo: repo, err: fmt.Errorf("clone: %w", err)}
 	}
 
-	agent := orchid.NewFromGenerator(gen)
+	agent := orchid.New(gen)
 	agent.Can(
 		orchid.Tool{
 			Name:        "read",

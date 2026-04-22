@@ -1,7 +1,9 @@
 package orchid
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 )
@@ -13,10 +15,7 @@ const (
 	EventUserInput EventType = iota
 	EventAssistantOutput
 	EventEffectIntent
-	EventEffectAdmitted
-	EventEffectStarted
 	EventEffectObserved
-	EventEffectApplied
 	EventEffectRejected
 	EventMessage // inter-process message
 	EventFork    // child process created
@@ -28,8 +27,7 @@ const (
 func (t EventType) String() string {
 	names := []string{
 		"UserInput", "AssistantOutput",
-		"EffectIntent", "EffectAdmitted", "EffectStarted", "EffectObserved",
-		"EffectApplied", "EffectRejected",
+		"EffectIntent", "EffectObserved", "EffectRejected",
 		"Message", "Fork", "Join",
 		"ProcessSpawned", "ProcessExited",
 	}
@@ -101,4 +99,38 @@ func (l *EventLog) All() []Event {
 // Since returns all events after the given ID (exclusive).
 func (l *EventLog) Since(id uint64) []Event {
 	return l.Slice(id+1, 0)
+}
+
+type eventRecord struct {
+	ID        uint64            `json:"id"`
+	Type      string            `json:"type"`
+	Timestamp time.Time         `json:"timestamp"`
+	ProcessID string            `json:"process_id"`
+	Data      map[string]string `json:"data"`
+}
+
+func (l *EventLog) WriteTo(w io.Writer) (int64, error) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	var total int64
+	for _, e := range l.events {
+		data, err := json.Marshal(eventRecord{
+			ID:        e.ID,
+			Type:      e.Type.String(),
+			Timestamp: e.Timestamp,
+			ProcessID: e.ProcessID,
+			Data:      e.Data,
+		})
+		if err != nil {
+			return total, err
+		}
+		data = append(data, '\n')
+		n, err := w.Write(data)
+		total += int64(n)
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
 }

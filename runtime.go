@@ -1,10 +1,13 @@
 package orchid
 
 import (
+	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
 // Runtime is the orchestration kernel.
@@ -54,7 +57,12 @@ func (r *Runtime) Spawn(spec ProcessSpec, caps []Capability, parentID string) *P
 	r.Log.Append(Event{
 		Type:      EventProcessSpawned,
 		ProcessID: p.ID,
-		Data:      map[string]string{"name": spec.Name, "parent": parentID},
+		Data: map[string]string{
+			"name":          spec.Name,
+			"parent":        parentID,
+			"model":         spec.Model,
+			"system_prompt": spec.SystemPrompt,
+		},
 	})
 	return p
 }
@@ -74,11 +82,16 @@ func (r *Runtime) Fork(parentID string, childSpec ProcessSpec, caps []Capability
 }
 
 // Join imports a child process's result into the parent's log.
-func (r *Runtime) Join(parentID string, childID string, result string) {
+func (r *Runtime) Join(parentID string, childID string, result string, usage TokenUsage) {
 	r.Log.Append(Event{
 		Type:      EventJoin,
 		ProcessID: parentID,
-		Data:      map[string]string{"child_id": childID, "result": result},
+		Data: map[string]string{
+			"child_id":      childID,
+			"result":        result,
+			"input_tokens":  strconv.Itoa(usage.InputTokens),
+			"output_tokens": strconv.Itoa(usage.OutputTokens),
+		},
 	})
 
 	child := r.Processes.Get(childID)
@@ -111,22 +124,31 @@ func (r *Runtime) Send(from, to, content string) {
 
 // Step runs one generate-then-execute cycle for a process.
 // Returns the proposal text and any effect results.
-func (r *Runtime) Step(processID string) (string, []EffectResult, TokenUsage) {
+func (r *Runtime) Step(ctx context.Context, processID string) (string, []EffectResult, TokenUsage) {
 	p := r.Processes.Get(processID)
 	if p == nil {
 		return "", nil, TokenUsage{}
 	}
 	p.State = ProcessRunning
 
-	ctx := BuildContext(p)
-	proposal := r.Generator.Generate(ctx)
+	orchidCtx := BuildContext(p)
+	orchidCtx.Ctx = ctx
+	proposal := r.Generator.Generate(orchidCtx)
 
 	p.History = proposal.History
+	p.Usage.InputTokens += proposal.InputTokens
+	p.Usage.OutputTokens += proposal.OutputTokens
 
 	r.Log.Append(Event{
 		Type:      EventAssistantOutput,
 		ProcessID: processID,
-		Data:      map[string]string{"content": proposal.Text, "prompt_id": proposal.PromptID},
+		Data: map[string]string{
+			"content":       proposal.Text,
+			"prompt_id":     proposal.PromptID,
+			"input_tokens":  strconv.Itoa(proposal.InputTokens),
+			"output_tokens": strconv.Itoa(proposal.OutputTokens),
+			"model":         p.Spec.Model,
+		},
 	})
 
 	var results []EffectResult
@@ -139,6 +161,50 @@ func (r *Runtime) Step(processID string) (string, []EffectResult, TokenUsage) {
 
 	p.State = ProcessWaiting
 	return proposal.Text, results, TokenUsage{InputTokens: proposal.InputTokens, OutputTokens: proposal.OutputTokens}
+}
+
+type StepCallback func(step int, text string, results []EffectResult) (inject string, stop bool)
+
+func (r *Runtime) StepUntilDone(ctx context.Context, processID string, maxSteps int, onStep StepCallback) (string, TokenUsage, error) {
+	var totalUsage TokenUsage
+	var lastText string
+
+	for step := 0; step < maxSteps; step++ {
+		text, results, usage := r.Step(ctx, processID)
+		totalUsage.InputTokens += usage.InputTokens
+		totalUsage.OutputTokens += usage.OutputTokens
+		lastText = text
+
+		hasEffects := false
+		for _, er := range results {
+			if er.Admitted {
+				hasEffects = true
+				break
+			}
+		}
+
+		if !hasEffects {
+			break
+		}
+
+		if onStep == nil {
+			continue
+		}
+
+		inject, stop := onStep(step, text, results)
+		if inject != "" {
+			r.Inject(processID, inject)
+		}
+		if stop {
+			text, _, usage = r.Step(ctx, processID)
+			totalUsage.InputTokens += usage.InputTokens
+			totalUsage.OutputTokens += usage.OutputTokens
+			lastText = text
+			break
+		}
+	}
+
+	return lastText, totalUsage, nil
 }
 
 type EffectResult struct {
@@ -196,13 +262,11 @@ func (r *Runtime) processEffect(p *Process, pe ProposedEffect) EffectResult {
 	}
 
 	eff.State = EffectAdmitted
-	r.Log.Append(Event{
-		Type:      EventEffectAdmitted,
-		ProcessID: p.ID,
-		Data:      map[string]string{"effect_id": eff.ID, "tool": pe.Tool},
-	})
 
-	handler, ok := r.Effects.GetHandler(pe.Tool)
+	handler, ok := p.GetHandler(pe.Tool)
+	if !ok {
+		handler, ok = r.Effects.GetHandler(pe.Tool)
+	}
 	if !ok {
 		eff.State = EffectRejected
 		reason := fmt.Sprintf("no handler for tool: %s", pe.Tool)
@@ -215,20 +279,18 @@ func (r *Runtime) processEffect(p *Process, pe ProposedEffect) EffectResult {
 	}
 
 	eff.State = EffectStarted
-	r.Log.Append(Event{
-		Type:      EventEffectStarted,
-		ProcessID: p.ID,
-		Data:      map[string]string{"effect_id": eff.ID, "tool": pe.Tool},
-	})
 
+	start := time.Now()
 	handlerResult, err := handler(pe.Args)
+	duration := time.Since(start)
+
 	if err != nil {
 		eff.State = EffectRejected
 		eff.Result = err.Error()
 		r.Log.Append(Event{
 			Type:      EventEffectRejected,
 			ProcessID: p.ID,
-			Data:      map[string]string{"effect_id": eff.ID, "reason": err.Error()},
+			Data:      map[string]string{"effect_id": eff.ID, "reason": err.Error(), "duration_ms": strconv.FormatInt(duration.Milliseconds(), 10)},
 		})
 		return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: true, Error: err.Error()}
 	}
@@ -238,15 +300,15 @@ func (r *Runtime) processEffect(p *Process, pe ProposedEffect) EffectResult {
 	r.Log.Append(Event{
 		Type:      EventEffectObserved,
 		ProcessID: p.ID,
-		Data:      map[string]string{"effect_id": eff.ID, "tool": pe.Tool, "result": handlerResult},
+		Data: map[string]string{
+			"effect_id":   eff.ID,
+			"tool":        pe.Tool,
+			"result":      handlerResult,
+			"duration_ms": strconv.FormatInt(duration.Milliseconds(), 10),
+		},
 	})
 
 	eff.State = EffectApplied
-	r.Log.Append(Event{
-		Type:      EventEffectApplied,
-		ProcessID: p.ID,
-		Data:      map[string]string{"effect_id": eff.ID, "tool": pe.Tool},
-	})
 
 	er := EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: true, Result: handlerResult}
 	if p.EffectCache == nil {

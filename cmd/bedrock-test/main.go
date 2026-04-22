@@ -20,7 +20,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	a := orchid.NewFromGenerator(gen)
+	a := orchid.New(gen)
 	a.System("You are a helpful assistant. Be concise.")
 
 	fmt.Println("=== Simple question ===")
@@ -33,7 +33,7 @@ func main() {
 	fmt.Println(result)
 
 	fmt.Println("\n=== With tools ===")
-	b := orchid.NewFromGenerator(gen)
+	b := orchid.New(gen)
 	b.Can(orchid.Tool{
 		Name:        "read",
 		Description: "Read a file given a path argument",

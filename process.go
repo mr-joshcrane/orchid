@@ -48,13 +48,24 @@ type Process struct {
 	ParentID       string
 	Mailbox        []Event
 	Tools          []ToolDefinition
+	Handlers       map[string]EffectHandler
 	History        any
 	PendingResults []EffectResult
 	EffectCache    map[string]EffectResult
+	Usage          TokenUsage
 }
 
 func (p *Process) HasCapability(c Capability) bool {
 	return p.Capabilities[c]
+}
+
+// GetHandler returns a process-local handler override for the given tool.
+func (p *Process) GetHandler(tool string) (EffectHandler, bool) {
+	if p.Handlers == nil {
+		return nil, false
+	}
+	h, ok := p.Handlers[tool]
+	return h, ok
 }
 
 // ProcessTable manages all active processes.
