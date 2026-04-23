@@ -2,3 +2,9 @@
 /api-demo
 /minidb-demo
 /refactor-demo
+/hybrid-demo
+/test-refactor
+
+# Generated output
+/refactored_tests/
+/integrated_tests/

@@ -11,11 +11,10 @@ import (
 )
 
 type Project struct {
-	Name     string
-	Spec     string
-	Plan     string
-	Endpoint string
-	Model    string
+	Name string
+	Spec string
+	Plan string
+	Gen  orchid.Generator
 }
 
 type Config struct {
@@ -32,6 +31,10 @@ func DefaultConfig() Config {
 }
 
 func Build(p Project, cfg Config) error {
+	if p.Gen == nil {
+		return fmt.Errorf("Project.Gen is required")
+	}
+
 	outDir := p.Name
 	os.RemoveAll(filepath.Join(cfg.BaseDir, outDir))
 
@@ -41,8 +44,7 @@ func Build(p Project, cfg Config) error {
 	}
 
 	implementations := implement(p, typePlan, signatures)
-	code := integrate(p, typePlan, signatures, implementations)
-	code = compileLoop(p, code, outDir, cfg)
+	compileLoop(p, integrate(p, typePlan, signatures, implementations), outDir, cfg)
 
 	vetOutput := vetCheck(outDir, cfg.BaseDir)
 	if vetOutput != "" {
@@ -57,7 +59,7 @@ func plan(p Project) (string, []string) {
 	if p.Plan != "" {
 		result = p.Plan
 	} else {
-		a := orchid.New(p.Endpoint, p.Model)
+		a := orchid.New(p.Gen)
 		a.System("You are a Go architect. When asked to design a package, respond with ONLY:\n1. The type definitions (structs, named types) needed\n2. The full function/method signatures\nUse valid Go syntax. No implementations, no comments, no explanation.")
 		a.GiveTask(p.Spec)
 		result, _, _ = a.Step()
@@ -74,7 +76,7 @@ func plan(p Project) (string, []string) {
 }
 
 func implement(p Project, typePlan string, signatures []string) []string {
-	a := orchid.New(p.Endpoint, p.Model)
+	a := orchid.New(p.Gen)
 	a.System("You are a Go developer. Respond with ONLY the Go function or method body. No package, no imports, no type definitions, no markdown, no explanation. Use the exact types and signatures provided.")
 
 	tasks := make([]string, len(signatures))
@@ -84,8 +86,12 @@ func implement(p Project, typePlan string, signatures []string) []string {
 			p.Name, typePlan, sig)
 	}
 
-	results, _ := a.Fork(tasks).Join()
-	return results
+	results, _ := a.Fork(tasks...).Join()
+	var out []string
+	for _, r := range results {
+		out = append(out, r.Text)
+	}
+	return out
 }
 
 func integrate(p Project, typePlan string, signatures []string, implementations []string) string {
@@ -94,7 +100,7 @@ func integrate(p Project, typePlan string, signatures []string, implementations 
 		fmt.Fprintf(&parts, "// %s\n%s\n\n", signatures[i], r)
 	}
 
-	a := orchid.New(p.Endpoint, p.Model)
+	a := orchid.New(p.Gen)
 	a.System("You are a Go developer. You take function implementations and assemble them into a complete, valid, compilable Go package. You decide what files to create, what types are needed, and what imports go where. Output the complete package as a single block with file boundaries marked as '// FILE: filename.go' on their own line. No markdown fences, no explanation.")
 
 	a.GiveTask(fmt.Sprintf(
@@ -131,7 +137,7 @@ func compileLoop(p Project, code string, outDir string, cfg Config) string {
 }
 
 func fixCode(p Project, code string, errors string) string {
-	fixer := orchid.New(p.Endpoint, p.Model)
+	fixer := orchid.New(p.Gen)
 	fixer.System("You are a Go developer fixing compile errors. Output the complete fixed package. Use '// FILE: filename.go' to mark file boundaries. No markdown fences, no explanation.")
 
 	fixer.GiveTask(fmt.Sprintf(

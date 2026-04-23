@@ -47,6 +47,8 @@ func NewBedrockGenerator(model string) (*BedrockGenerator, error) {
 	}, nil
 }
 
+func (g *BedrockGenerator) Model() string { return g.model }
+
 func (g *BedrockGenerator) Generate(ctx Context) Proposal {
 	var history []bedrockMessage
 	if h, ok := ctx.History.([]bedrockMessage); ok {
@@ -97,7 +99,11 @@ func (g *BedrockGenerator) Generate(ctx Context) Proposal {
 
 	payload, _ := json.Marshal(body)
 	trace := newPromptTrace()
-	raw, err := g.call(payload)
+	requestCtx := ctx.Ctx
+	if requestCtx == nil {
+		requestCtx = context.Background()
+	}
+	raw, err := g.call(requestCtx, payload)
 	if err != nil {
 		trace.save(payload, []byte(err.Error()))
 		return Proposal{Text: fmt.Sprintf("error: %s", err), PromptID: trace.id, History: history}
@@ -171,10 +177,10 @@ func (g *BedrockGenerator) buildTools(tools []ToolDefinition) []bedrockTool {
 	return out
 }
 
-func (g *BedrockGenerator) call(payload []byte) ([]byte, error) {
+func (g *BedrockGenerator) call(ctx context.Context, payload []byte) ([]byte, error) {
 	endpoint := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s/converse", g.region, url.PathEscape(g.model))
 
-	req, err := http.NewRequest("POST", endpoint, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +189,6 @@ func (g *BedrockGenerator) call(payload []byte) ([]byte, error) {
 	hash := sha256.Sum256(payload)
 	payloadHash := hex.EncodeToString(hash[:])
 
-	ctx := context.Background()
 	creds, err := g.creds.Retrieve(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("retrieving credentials: %w", err)

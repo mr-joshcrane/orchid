@@ -1,6 +1,7 @@
 package orchid
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -8,13 +9,11 @@ import (
 	"path/filepath"
 )
 
-// TokenUsage records input/output token counts from a single LLM call.
 type TokenUsage struct {
 	InputTokens  int
 	OutputTokens int
 }
 
-// Proposal is what a Generator returns — text output plus effect intents.
 type Proposal struct {
 	Text         string
 	Effects      []ProposedEffect
@@ -25,15 +24,14 @@ type Proposal struct {
 	OutputTokens int
 }
 
-// ProposedEffect is a tool call the generator wants to make.
 type ProposedEffect struct {
 	Tool      string
 	Args      map[string]string
 	ToolUseID string
 }
 
-// Context is the structured state visible to a generator.
 type Context struct {
+	Ctx            context.Context
 	Spec           ProcessSpec
 	Events         []Event
 	LastInput      string
@@ -45,13 +43,11 @@ type Context struct {
 	PendingResults []EffectResult
 }
 
-// ToolResultEntry pairs a tool name with its result.
 type ToolResultEntry struct {
 	Tool   string
 	Result string
 }
 
-// ChildResultEntry pairs a child ID with its joined result.
 type ChildResultEntry struct {
 	ChildID string
 	Result  string
@@ -62,12 +58,14 @@ type ToolDefinition struct {
 	Description string
 }
 
-// Generator takes structured context and produces a proposal.
 type Generator interface {
 	Generate(ctx Context) Proposal
 }
 
-// GeneratorFunc adapts a plain function into a Generator.
+type ModelIdentifier interface {
+	Model() string
+}
+
 type GeneratorFunc func(Context) Proposal
 
 func (f GeneratorFunc) Generate(ctx Context) Proposal {

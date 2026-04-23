@@ -1,6 +1,8 @@
 package orchid
 
 import (
+	"bytes"
+	"encoding/json"
 	"sync"
 	"testing"
 )
@@ -132,5 +134,55 @@ func TestEventType_String(t *testing.T) {
 	}
 	if EventType(99).String() != "EventType(99)" {
 		t.Fatalf("unknown type string = %q", EventType(99).String())
+	}
+}
+
+func TestEventLog_WriteTo_ProducesValidJSONL(t *testing.T) {
+	log := NewEventLog()
+	log.Append(Event{
+		Type:      EventUserInput,
+		ProcessID: "proc_1",
+		Data:      map[string]string{"content": "hello"},
+	})
+	log.Append(Event{
+		Type:      EventAssistantOutput,
+		ProcessID: "proc_1",
+		Data:      map[string]string{"content": "world", "input_tokens": "100", "output_tokens": "25"},
+	})
+
+	var buf bytes.Buffer
+	n, err := log.WriteTo(&buf)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n == 0 {
+		t.Fatal("wrote 0 bytes")
+	}
+
+	lines := bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n"))
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d", len(lines))
+	}
+
+	var record eventRecord
+	if err := json.Unmarshal(lines[0], &record); err != nil {
+		t.Fatalf("line 0 not valid JSON: %v", err)
+	}
+	if record.Type != "UserInput" {
+		t.Fatalf("type = %q, want %q", record.Type, "UserInput")
+	}
+	if record.ProcessID != "proc_1" {
+		t.Fatalf("process_id = %q", record.ProcessID)
+	}
+	if record.Data["content"] != "hello" {
+		t.Fatalf("content = %q", record.Data["content"])
+	}
+
+	if err := json.Unmarshal(lines[1], &record); err != nil {
+		t.Fatalf("line 1 not valid JSON: %v", err)
+	}
+	if record.Data["input_tokens"] != "100" {
+		t.Fatalf("input_tokens = %q", record.Data["input_tokens"])
 	}
 }

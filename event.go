@@ -1,7 +1,9 @@
 package orchid
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 )
@@ -13,10 +15,7 @@ const (
 	EventUserInput EventType = iota
 	EventAssistantOutput
 	EventEffectIntent
-	EventEffectAdmitted
-	EventEffectStarted
 	EventEffectObserved
-	EventEffectApplied
 	EventEffectRejected
 	EventMessage // inter-process message
 	EventFork    // child process created
@@ -28,8 +27,7 @@ const (
 func (t EventType) String() string {
 	names := []string{
 		"UserInput", "AssistantOutput",
-		"EffectIntent", "EffectAdmitted", "EffectStarted", "EffectObserved",
-		"EffectApplied", "EffectRejected",
+		"EffectIntent", "EffectObserved", "EffectRejected",
 		"Message", "Fork", "Join",
 		"ProcessSpawned", "ProcessExited",
 	}
@@ -50,16 +48,24 @@ type Event struct {
 
 // EventLog is an append-only, concurrency-safe log.
 type EventLog struct {
-	mu     sync.RWMutex
-	events []Event
-	nextID uint64
+	mu       sync.RWMutex
+	events   []Event
+	nextID   uint64
+	listener chan<- Event
 }
 
 func NewEventLog() *EventLog {
 	return &EventLog{}
 }
 
-// Append adds an event and returns its assigned ID.
+// SetListener sets (or clears) the channel that receives copies of appended events.
+// Pass nil to detach.
+func (l *EventLog) SetListener(ch chan<- Event) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.listener = ch
+}
+
 func (l *EventLog) Append(e Event) uint64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -67,6 +73,12 @@ func (l *EventLog) Append(e Event) uint64 {
 	e.Timestamp = time.Now()
 	l.events = append(l.events, e)
 	l.nextID++
+	if l.listener != nil {
+		select {
+		case l.listener <- e:
+		default:
+		}
+	}
 	return e.ID
 }
 
@@ -101,4 +113,40 @@ func (l *EventLog) All() []Event {
 // Since returns all events after the given ID (exclusive).
 func (l *EventLog) Since(id uint64) []Event {
 	return l.Slice(id+1, 0)
+}
+
+type eventRecord struct {
+	ID        uint64            `json:"id"`
+	Type      string            `json:"type"`
+	Timestamp time.Time         `json:"timestamp"`
+	ProcessID string            `json:"process_id"`
+	Data      map[string]string `json:"data"`
+}
+
+func (l *EventLog) WriteTo(w io.Writer) (int64, error) {
+	l.mu.RLock()
+	snapshot := make([]Event, len(l.events))
+	copy(snapshot, l.events)
+	l.mu.RUnlock()
+
+	var total int64
+	for _, e := range snapshot {
+		data, err := json.Marshal(eventRecord{
+			ID:        e.ID,
+			Type:      e.Type.String(),
+			Timestamp: e.Timestamp,
+			ProcessID: e.ProcessID,
+			Data:      e.Data,
+		})
+		if err != nil {
+			return total, err
+		}
+		data = append(data, '\n')
+		n, err := w.Write(data)
+		total += int64(n)
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
 }
