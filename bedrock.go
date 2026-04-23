@@ -47,6 +47,8 @@ func NewBedrockGenerator(model string) (*BedrockGenerator, error) {
 	}, nil
 }
 
+func (g *BedrockGenerator) Model() string { return g.model }
+
 func (g *BedrockGenerator) Generate(ctx Context) Proposal {
 	var history []bedrockMessage
 	if h, ok := ctx.History.([]bedrockMessage); ok {
@@ -97,7 +99,11 @@ func (g *BedrockGenerator) Generate(ctx Context) Proposal {
 
 	payload, _ := json.Marshal(body)
 	trace := newPromptTrace()
-	raw, err := g.call(ctx.Ctx, payload)
+	requestCtx := ctx.Ctx
+	if requestCtx == nil {
+		requestCtx = context.Background()
+	}
+	raw, err := g.call(requestCtx, payload)
 	if err != nil {
 		trace.save(payload, []byte(err.Error()))
 		return Proposal{Text: fmt.Sprintf("error: %s", err), PromptID: trace.id, History: history}

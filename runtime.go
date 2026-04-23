@@ -14,6 +14,7 @@ import (
 )
 
 var DefaultLogDir string
+var logSeq atomic.Uint64
 
 func init() {
 	home, err := os.UserHomeDir()
@@ -40,7 +41,7 @@ func NewWorkflow() *Workflow {
 		Effects:   NewEffectTable(),
 	}
 	wf.startLogWriter()
-	wf.Log.listener = wf.logCh
+	wf.Log.SetListener(wf.logCh)
 	return wf
 }
 
@@ -51,11 +52,11 @@ func NewRuntime(gen Generator) *Workflow {
 }
 
 func (w *Workflow) Quiet() {
-	w.Log.listener = nil
+	w.Log.SetListener(nil)
 }
 
 func (w *Workflow) Close() {
-	w.Log.listener = nil
+	w.Log.SetListener(nil)
 	if w.logCh != nil {
 		close(w.logCh)
 		<-w.done
@@ -71,7 +72,7 @@ func (w *Workflow) startLogWriter() {
 	if err != nil {
 		return
 	}
-	name := fmt.Sprintf("%s.jsonl", time.Now().Format("2006-01-02T15-04-05.000"))
+	name := fmt.Sprintf("%s-%d-%d.jsonl", time.Now().Format("2006-01-02T15-04-05.000"), os.Getpid(), logSeq.Add(1))
 	f, err := os.Create(filepath.Join(DefaultLogDir, name))
 	if err != nil {
 		return
@@ -196,6 +197,9 @@ func (w *Workflow) Step(ctx context.Context, processID string) (string, []Effect
 	p.State = ProcessRunning
 
 	orchidCtx := BuildContext(p)
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	orchidCtx.Ctx = ctx
 
 	gen := p.Generator
@@ -208,6 +212,13 @@ func (w *Workflow) Step(ctx context.Context, processID string) (string, []Effect
 	p.Usage.InputTokens += proposal.InputTokens
 	p.Usage.OutputTokens += proposal.OutputTokens
 
+	model := p.Spec.Model
+	if model == "" {
+		if mi, ok := gen.(ModelIdentifier); ok {
+			model = mi.Model()
+		}
+	}
+
 	w.Log.Append(Event{
 		Type:      EventAssistantOutput,
 		ProcessID: processID,
@@ -216,7 +227,7 @@ func (w *Workflow) Step(ctx context.Context, processID string) (string, []Effect
 			"prompt_id":     proposal.PromptID,
 			"input_tokens":  strconv.Itoa(proposal.InputTokens),
 			"output_tokens": strconv.Itoa(proposal.OutputTokens),
-			"model":         p.Spec.Model,
+			"model":         model,
 		},
 	})
 
@@ -244,15 +255,7 @@ func (w *Workflow) StepUntilDone(ctx context.Context, processID string, maxSteps
 		totalUsage.OutputTokens += usage.OutputTokens
 		lastText = text
 
-		hasEffects := false
-		for _, er := range results {
-			if er.Admitted {
-				hasEffects = true
-				break
-			}
-		}
-
-		if !hasEffects {
+		if len(results) == 0 {
 			break
 		}
 

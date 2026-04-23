@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -12,7 +13,7 @@ import (
 
 func TestMain(m *testing.M) {
 	orchid.DefaultLogDir = ""
-	m.Run()
+	os.Exit(m.Run())
 }
 
 func TestMultiAgentFileSearch(t *testing.T) {

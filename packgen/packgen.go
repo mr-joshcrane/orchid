@@ -31,6 +31,10 @@ func DefaultConfig() Config {
 }
 
 func Build(p Project, cfg Config) error {
+	if p.Gen == nil {
+		return fmt.Errorf("Project.Gen is required")
+	}
+
 	outDir := p.Name
 	os.RemoveAll(filepath.Join(cfg.BaseDir, outDir))
 

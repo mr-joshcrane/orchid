@@ -58,6 +58,14 @@ func NewEventLog() *EventLog {
 	return &EventLog{}
 }
 
+// SetListener sets (or clears) the channel that receives copies of appended events.
+// Pass nil to detach.
+func (l *EventLog) SetListener(ch chan<- Event) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.listener = ch
+}
+
 func (l *EventLog) Append(e Event) uint64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -117,10 +125,12 @@ type eventRecord struct {
 
 func (l *EventLog) WriteTo(w io.Writer) (int64, error) {
 	l.mu.RLock()
-	defer l.mu.RUnlock()
+	snapshot := make([]Event, len(l.events))
+	copy(snapshot, l.events)
+	l.mu.RUnlock()
 
 	var total int64
-	for _, e := range l.events {
+	for _, e := range snapshot {
 		data, err := json.Marshal(eventRecord{
 			ID:        e.ID,
 			Type:      e.Type.String(),

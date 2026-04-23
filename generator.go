@@ -62,6 +62,10 @@ type Generator interface {
 	Generate(ctx Context) Proposal
 }
 
+type ModelIdentifier interface {
+	Model() string
+}
+
 type GeneratorFunc func(Context) Proposal
 
 func (f GeneratorFunc) Generate(ctx Context) Proposal {

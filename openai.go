@@ -2,6 +2,7 @@ package orchid
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +18,8 @@ type OpenAIGenerator struct {
 func NewOpenAIGenerator(endpoint, model string) *OpenAIGenerator {
 	return &OpenAIGenerator{endpoint: endpoint, model: model}
 }
+
+func (g *OpenAIGenerator) Model() string { return g.model }
 
 type openAIMessage struct {
 	Role       string       `json:"role"`
@@ -97,7 +100,11 @@ func (g *OpenAIGenerator) Generate(ctx Context) Proposal {
 func (g *OpenAIGenerator) call(ctx Context, payload []byte) ([]byte, error) {
 	url := strings.TrimRight(g.endpoint, "/") + "/v1/chat/completions"
 
-	req, err := http.NewRequestWithContext(ctx.Ctx, "POST", url, bytes.NewReader(payload))
+	requestCtx := ctx.Ctx
+	if requestCtx == nil {
+		requestCtx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(requestCtx, "POST", url, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
