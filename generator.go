@@ -17,6 +17,7 @@ type TokenUsage struct {
 type Proposal struct {
 	Text         string
 	Effects      []ProposedEffect
+	Err          error
 	PromptID     string
 	RawMessage   string
 	History      any

@@ -208,6 +208,12 @@ func (w *Workflow) Step(ctx context.Context, processID string) (string, []Effect
 	}
 	proposal := gen.Generate(orchidCtx)
 
+	if proposal.Err != nil {
+		p.State = ProcessFailed
+		p.Err = proposal.Err
+		return "", nil, TokenUsage{}
+	}
+
 	p.History = proposal.History
 	p.Usage.InputTokens += proposal.InputTokens
 	p.Usage.OutputTokens += proposal.OutputTokens
@@ -254,6 +260,11 @@ func (w *Workflow) StepUntilDone(ctx context.Context, processID string, maxSteps
 		totalUsage.InputTokens += usage.InputTokens
 		totalUsage.OutputTokens += usage.OutputTokens
 		lastText = text
+
+		p := w.Processes.Get(processID)
+		if p != nil && p.Err != nil {
+			return "", totalUsage, p.Err
+		}
 
 		if len(results) == 0 {
 			break
