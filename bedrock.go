@@ -106,7 +106,7 @@ func (g *BedrockGenerator) Generate(ctx Context) Proposal {
 	raw, err := g.call(requestCtx, payload)
 	if err != nil {
 		trace.save(payload, []byte(err.Error()))
-		return Proposal{Text: fmt.Sprintf("error: %s", err), PromptID: trace.id, History: history}
+		return Proposal{Err: err, PromptID: trace.id, History: history}
 	}
 
 	trace.save(payload, raw)
@@ -217,7 +217,7 @@ func (g *BedrockGenerator) call(ctx context.Context, payload []byte) ([]byte, er
 func (g *BedrockGenerator) parseResponse(raw []byte) Proposal {
 	var resp bedrockResponse
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		return Proposal{Text: fmt.Sprintf("error parsing response: %s", string(raw))}
+		return Proposal{Err: fmt.Errorf("parsing response: %s", string(raw))}
 	}
 
 	msg := resp.Output.Message

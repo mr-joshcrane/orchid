@@ -85,7 +85,7 @@ func (g *OpenAIGenerator) Generate(ctx Context) Proposal {
 	raw, err := g.call(ctx, payload)
 	if err != nil {
 		trace.save(payload, []byte(err.Error()))
-		return Proposal{Text: fmt.Sprintf("error: %s", err), PromptID: trace.id, History: history}
+		return Proposal{Err: err, PromptID: trace.id, History: history}
 	}
 
 	trace.save(payload, raw)
@@ -142,7 +142,7 @@ func (g *OpenAIGenerator) parseResponse(raw []byte) Proposal {
 	}
 
 	if err := json.Unmarshal(raw, &result); err != nil || len(result.Choices) == 0 {
-		return Proposal{Text: fmt.Sprintf("error parsing response: %s", string(raw))}
+		return Proposal{Err: fmt.Errorf("parsing response: %s", string(raw))}
 	}
 
 	msg := result.Choices[0].Message

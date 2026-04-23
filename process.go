@@ -36,6 +36,7 @@ const (
 	ProcessRunning
 	ProcessWaiting
 	ProcessDone
+	ProcessFailed
 )
 
 // Process is a running agent in the runtime.
@@ -46,6 +47,7 @@ type Process struct {
 	Capabilities   map[Capability]bool
 	View           LogView
 	State          ProcessState
+	Err            error
 	ParentID       string
 	Mailbox        []Event
 	Tools          []ToolDefinition

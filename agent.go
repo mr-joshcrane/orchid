@@ -103,6 +103,9 @@ func (a *Agent) StepWithContext(ctx context.Context) (string, []EffectResult, er
 	}
 	text, results, usage := a.wf.Step(ctx, a.proc.ID)
 	a.addUsage(usage)
+	if a.proc.Err != nil {
+		return "", nil, a.proc.Err
+	}
 	return text, results, nil
 }
 
