@@ -1,7 +1,6 @@
 package orchid
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -14,7 +13,7 @@ func TestBuildContext_LastInput(t *testing.T) {
 
 	p := &Process{
 		ID:   "p1",
-		Spec: ProcessSpec{Name: "test"},
+		Name: "test",
 		View: LogView{Source: log, StartCut: 0},
 	}
 
@@ -38,7 +37,6 @@ func TestBuildContext_Step(t *testing.T) {
 
 	ctx := BuildContext(p)
 
-	// 2 UserInput + 1 AssistantOutput = 3 steps
 	if ctx.Step != 3 {
 		t.Fatalf("Step = %d, want 3", ctx.Step)
 	}
@@ -67,38 +65,19 @@ func TestBuildContext_ToolResults(t *testing.T) {
 	}
 }
 
-func TestBuildContext_ChildResults(t *testing.T) {
+func TestBuildContext_NameAndPurpose(t *testing.T) {
 	log := NewEventLog()
-	log.Append(Event{Type: EventJoin, ProcessID: "p1", Data: map[string]string{"child_id": "c1", "result": "found it"}})
 
 	p := &Process{
-		ID:   "p1",
-		View: LogView{Source: log, StartCut: 0},
+		ID:      "p1",
+		Name:    "myproc",
+		Purpose: "you are helpful",
+		View:    LogView{Source: log, StartCut: 0},
 	}
 
 	ctx := BuildContext(p)
-
-	if len(ctx.ChildResults) != 1 {
-		t.Fatalf("ChildResults len = %d, want 1", len(ctx.ChildResults))
-	}
-	if ctx.ChildResults[0].ChildID != "c1" || ctx.ChildResults[0].Result != "found it" {
-		t.Fatalf("ChildResults[0] = %+v", ctx.ChildResults[0])
-	}
-}
-
-func TestBuildContext_Spec(t *testing.T) {
-	log := NewEventLog()
-	spec := ProcessSpec{Name: "myproc", SystemPrompt: "you are helpful", Model: "gpt-4"}
-
-	p := &Process{
-		ID:   "p1",
-		Spec: spec,
-		View: LogView{Source: log, StartCut: 0},
-	}
-
-	ctx := BuildContext(p)
-	if ctx.Spec.Name != "myproc" || ctx.Spec.SystemPrompt != "you are helpful" {
-		t.Fatalf("Spec not propagated: %+v", ctx.Spec)
+	if ctx.Name != "myproc" || ctx.Purpose != "you are helpful" {
+		t.Fatalf("Name/Purpose not propagated: Name=%q Purpose=%q", ctx.Name, ctx.Purpose)
 	}
 }
 
@@ -148,8 +127,8 @@ func TestBuildContext_FilterByProcessID(t *testing.T) {
 
 func TestBuildContext_RespectsStartCut(t *testing.T) {
 	log := NewEventLog()
-	log.Append(Event{Type: EventUserInput, ProcessID: "p1", Data: map[string]string{"content": "before"}}) // ID 0
-	log.Append(Event{Type: EventUserInput, ProcessID: "p1", Data: map[string]string{"content": "after"}})  // ID 1
+	log.Append(Event{Type: EventUserInput, ProcessID: "p1", Data: map[string]string{"content": "before"}})
+	log.Append(Event{Type: EventUserInput, ProcessID: "p1", Data: map[string]string{"content": "after"}})
 
 	p := &Process{
 		ID:   "p1",
@@ -187,39 +166,5 @@ func TestBuildContext_RespectsViewFilter(t *testing.T) {
 	}
 	if len(ctx.ToolResults) != 0 {
 		t.Fatal("ToolResults should be empty after filter")
-	}
-}
-
-func TestRenderContext(t *testing.T) {
-	ctx := Context{
-		Spec: ProcessSpec{SystemPrompt: "you help"},
-		Events: []Event{
-			{Type: EventUserInput, Data: map[string]string{"content": "hi"}},
-			{Type: EventAssistantOutput, Data: map[string]string{"content": "hello"}},
-			{Type: EventEffectObserved, Data: map[string]string{"tool": "read", "result": "data"}},
-			{Type: EventMessage, Data: map[string]string{"from": "p2", "content": "msg"}},
-			{Type: EventJoin, Data: map[string]string{"child_id": "c1", "result": "done"}},
-		},
-	}
-
-	rendered := RenderContext(ctx)
-
-	if !strings.Contains(rendered, "System: you help") {
-		t.Fatal("missing system prompt")
-	}
-	if !strings.Contains(rendered, "User: hi") {
-		t.Fatal("missing user input")
-	}
-	if !strings.Contains(rendered, "Assistant: hello") {
-		t.Fatal("missing assistant output")
-	}
-	if !strings.Contains(rendered, "Tool [read]: data") {
-		t.Fatal("missing tool result")
-	}
-	if !strings.Contains(rendered, "Message from p2: msg") {
-		t.Fatal("missing message")
-	}
-	if !strings.Contains(rendered, "Child result [c1]: done") {
-		t.Fatal("missing child result")
 	}
 }

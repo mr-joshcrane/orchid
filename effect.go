@@ -27,14 +27,13 @@ func (s EffectState) String() string {
 
 // Effect represents a proposed or in-flight side effect.
 type Effect struct {
-	ID             string
-	ProcessID      string
-	Tool           string
-	Args           map[string]string
-	State          EffectState
-	Result         string
-	IdempotencyKey string
-	EventID        uint64 // the log event that created this intent
+	ID        string
+	ProcessID string
+	Tool      string
+	Args      map[string]string
+	State     EffectState
+	Result    string
+	EventID   uint64
 }
 
 // EffectHandler executes a specific tool type and returns the result.
@@ -98,16 +97,4 @@ func (et *EffectTable) GetHandler(tool string) (EffectHandler, bool) {
 	defer et.mu.RUnlock()
 	h, ok := et.handlers[tool]
 	return h, ok
-}
-
-func (et *EffectTable) InFlight() []*Effect {
-	et.mu.RLock()
-	defer et.mu.RUnlock()
-	var out []*Effect
-	for _, e := range et.effects {
-		if e.State == EffectStarted {
-			out = append(out, e)
-		}
-	}
-	return out
 }

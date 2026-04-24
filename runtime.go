@@ -2,10 +2,7 @@ package orchid
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,91 +10,27 @@ import (
 	"time"
 )
 
-var DefaultLogDir string
-var logSeq atomic.Uint64
-
-func init() {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = os.TempDir()
-	}
-	DefaultLogDir = filepath.Join(home, ".orchid", "logs")
-}
-
 type Workflow struct {
-	Log              *EventLog
-	Processes        *ProcessTable
-	Effects          *EffectTable
-	DefaultGenerator Generator
-	nextPID          atomic.Uint64
-	logCh            chan Event
-	done             chan struct{}
+	Log       *EventLog
+	Processes *ProcessTable
+	Effects   *EffectTable
+	gen       Generator
+	tools     []Tool
+	nextPID   atomic.Uint64
 }
 
-func NewWorkflow() *Workflow {
+func NewWorkflow(gen Generator, tools ...Tool) *Workflow {
 	wf := &Workflow{
 		Log:       NewEventLog(),
 		Processes: NewProcessTable(),
 		Effects:   NewEffectTable(),
+		gen:       gen,
+		tools:     tools,
 	}
-	wf.startLogWriter()
-	wf.Log.SetListener(wf.logCh)
+	for _, t := range tools {
+		wf.Effects.RegisterHandler(t.Name, t.Handler)
+	}
 	return wf
-}
-
-func NewRuntime(gen Generator) *Workflow {
-	wf := NewWorkflow()
-	wf.DefaultGenerator = gen
-	return wf
-}
-
-func (w *Workflow) Quiet() {
-	w.Log.SetListener(nil)
-}
-
-func (w *Workflow) Close() {
-	w.Log.SetListener(nil)
-	if w.logCh != nil {
-		close(w.logCh)
-		<-w.done
-		w.logCh = nil
-	}
-}
-
-func (w *Workflow) startLogWriter() {
-	if DefaultLogDir == "" {
-		return
-	}
-	err := os.MkdirAll(DefaultLogDir, 0o755)
-	if err != nil {
-		return
-	}
-	name := fmt.Sprintf("%s-%d-%d.jsonl", time.Now().Format("2006-01-02T15-04-05.000"), os.Getpid(), logSeq.Add(1))
-	f, err := os.Create(filepath.Join(DefaultLogDir, name))
-	if err != nil {
-		return
-	}
-
-	w.logCh = make(chan Event, 1000)
-	w.done = make(chan struct{})
-
-	go func() {
-		defer f.Close()
-		defer close(w.done)
-		for e := range w.logCh {
-			data, err := json.Marshal(eventRecord{
-				ID:        e.ID,
-				Type:      e.Type.String(),
-				Timestamp: e.Timestamp,
-				ProcessID: e.ProcessID,
-				Data:      e.Data,
-			})
-			if err != nil {
-				continue
-			}
-			f.Write(append(data, '\n'))
-		}
-	}()
 }
 
 func (w *Workflow) newProcessID() string {
@@ -108,10 +41,11 @@ func (w *Workflow) newEffectID() string {
 	return fmt.Sprintf("eff_%d", w.nextPID.Add(1))
 }
 
-func (w *Workflow) Spawn(spec ProcessSpec, caps []Capability, parentID string) *Process {
+func (w *Workflow) Spawn(name, purpose string, caps []Capability, parentID string) *Process {
 	p := &Process{
 		ID:           w.newProcessID(),
-		Spec:         spec,
+		Name:         name,
+		Purpose:      purpose,
 		Capabilities: make(map[Capability]bool),
 		View: LogView{
 			Source:   w.Log,
@@ -129,48 +63,12 @@ func (w *Workflow) Spawn(spec ProcessSpec, caps []Capability, parentID string) *
 		Type:      EventProcessSpawned,
 		ProcessID: p.ID,
 		Data: map[string]string{
-			"name":          spec.Name,
-			"parent":        parentID,
-			"model":         spec.Model,
-			"system_prompt": spec.SystemPrompt,
+			"name":    name,
+			"purpose": purpose,
+			"parent":  parentID,
 		},
 	})
 	return p
-}
-
-func (w *Workflow) Fork(parentID string, childSpec ProcessSpec, caps []Capability) *Process {
-	child := w.Spawn(childSpec, caps, parentID)
-	child.View.StartCut = 0
-	child.View.Source = w.Log
-
-	w.Log.Append(Event{
-		Type:      EventFork,
-		ProcessID: parentID,
-		Data:      map[string]string{"child_id": child.ID},
-	})
-	return child
-}
-
-func (w *Workflow) Join(parentID string, childID string, result string, usage TokenUsage) {
-	w.Log.Append(Event{
-		Type:      EventJoin,
-		ProcessID: parentID,
-		Data: map[string]string{
-			"child_id":      childID,
-			"result":        result,
-			"input_tokens":  strconv.Itoa(usage.InputTokens),
-			"output_tokens": strconv.Itoa(usage.OutputTokens),
-		},
-	})
-
-	child := w.Processes.Get(childID)
-	if child != nil {
-		child.State = ProcessDone
-		w.Log.Append(Event{
-			Type:      EventProcessExited,
-			ProcessID: childID,
-		})
-	}
 }
 
 func (w *Workflow) Inject(processID string, input string) {
@@ -178,14 +76,6 @@ func (w *Workflow) Inject(processID string, input string) {
 		Type:      EventUserInput,
 		ProcessID: processID,
 		Data:      map[string]string{"content": input},
-	})
-}
-
-func (w *Workflow) Send(from, to, content string) {
-	w.Log.Append(Event{
-		Type:      EventMessage,
-		ProcessID: to,
-		Data:      map[string]string{"from": from, "content": content},
 	})
 }
 
@@ -204,7 +94,7 @@ func (w *Workflow) Step(ctx context.Context, processID string) (string, []Effect
 
 	gen := p.Generator
 	if gen == nil {
-		gen = w.DefaultGenerator
+		gen = w.gen
 	}
 	proposal := gen.Generate(orchidCtx)
 
@@ -218,11 +108,9 @@ func (w *Workflow) Step(ctx context.Context, processID string) (string, []Effect
 	p.Usage.InputTokens += proposal.InputTokens
 	p.Usage.OutputTokens += proposal.OutputTokens
 
-	model := p.Spec.Model
-	if model == "" {
-		if mi, ok := gen.(ModelIdentifier); ok {
-			model = mi.Model()
-		}
+	model := ""
+	if mi, ok := gen.(ModelIdentifier); ok {
+		model = mi.Model()
 	}
 
 	w.Log.Append(Event{
@@ -290,6 +178,28 @@ func (w *Workflow) StepUntilDone(ctx context.Context, processID string, maxSteps
 	return lastText, totalUsage, nil
 }
 
+func (w *Workflow) Run(ctx context.Context, purpose string, task string) (string, TokenUsage, error) {
+	caps := make([]Capability, len(w.tools))
+	for i, t := range w.tools {
+		caps[i] = Capability(t.Name)
+	}
+
+	p := w.Spawn(purpose, purpose, caps, "")
+
+	defs := make([]ToolDefinition, len(w.tools))
+	for i, t := range w.tools {
+		defs[i] = ToolDefinition{Name: t.Name, Description: t.Description, Params: t.Params}
+	}
+	p.Tools = defs
+
+	p.View.Filter = func(e Event) bool {
+		return e.ProcessID == p.ID
+	}
+
+	w.Inject(p.ID, task)
+	return w.StepUntilDone(ctx, p.ID, 50, nil)
+}
+
 type EffectResult struct {
 	Tool      string
 	ToolUseID string
@@ -346,10 +256,27 @@ func (w *Workflow) processEffect(p *Process, pe ProposedEffect) EffectResult {
 
 	eff.State = EffectAdmitted
 
-	handler, ok := p.GetHandler(pe.Tool)
-	if !ok {
-		handler, ok = w.Effects.GetHandler(pe.Tool)
+	var toolDef *Tool
+	for i := range w.tools {
+		if w.tools[i].Name == pe.Tool {
+			toolDef = &w.tools[i]
+			break
+		}
 	}
+
+	if toolDef != nil {
+		if reason := validateArgs(toolDef.Params, pe.Args); reason != "" {
+			eff.State = EffectRejected
+			w.Log.Append(Event{
+				Type:      EventEffectRejected,
+				ProcessID: p.ID,
+				Data:      map[string]string{"effect_id": eff.ID, "reason": reason},
+			})
+			return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: true, Error: reason}
+		}
+	}
+
+	handler, ok := w.Effects.GetHandler(pe.Tool)
 	if !ok {
 		eff.State = EffectRejected
 		reason := fmt.Sprintf("no handler for tool: %s", pe.Tool)
@@ -423,4 +350,36 @@ func mergeMap(base, overlay map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func validateArgs(params map[string]Param, args map[string]string) string {
+	if len(params) == 0 {
+		return ""
+	}
+	var missing []string
+	for name, p := range params {
+		if p.Required && args[name] == "" {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return fmt.Sprintf("missing required parameters: %s", strings.Join(missing, ", "))
+	}
+	var unknown []string
+	for k := range args {
+		if _, ok := params[k]; !ok {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		var known []string
+		for name := range params {
+			known = append(known, name)
+		}
+		sort.Strings(known)
+		return fmt.Sprintf("unknown parameters: %s (valid: %s)", strings.Join(unknown, ", "), strings.Join(known, ", "))
+	}
+	return ""
 }

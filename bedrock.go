@@ -88,7 +88,7 @@ func (g *BedrockGenerator) Generate(ctx Context) Proposal {
 	tools := g.buildTools(ctx.Tools)
 	body := bedrockRequest{
 		Messages: history,
-		System:   []bedrockTextBlock{{Text: ctx.Spec.SystemPrompt}},
+		System:   []bedrockTextBlock{{Text: ctx.Purpose}},
 		InferenceConfig: &bedrockInferenceConfig{
 			Temperature: floatPtr(0),
 		},
@@ -166,10 +166,7 @@ func (g *BedrockGenerator) buildTools(tools []ToolDefinition) []bedrockTool {
 				Name:        t.Name,
 				Description: t.Description,
 				InputSchema: &bedrockInputSchema{
-					JSON: map[string]any{
-						"type":       "object",
-						"properties": map[string]any{},
-					},
+					JSON: paramSchema(t.Params),
 				},
 			},
 		})

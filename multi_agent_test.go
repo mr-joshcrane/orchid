@@ -6,17 +6,17 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mr-joshcrane/orchid"
 )
 
 func TestMain(m *testing.M) {
-	orchid.DefaultLogDir = ""
 	os.Exit(m.Run())
 }
 
-func TestMultiAgentFileSearch(t *testing.T) {
+func TestWorkflow_Run_FileSearch(t *testing.T) {
 	files := map[string]string{
 		"file_00.txt": "the quick brown fox",
 		"file_01.txt": "jumps over the lazy dog",
@@ -38,84 +38,51 @@ func TestMultiAgentFileSearch(t *testing.T) {
 	}
 
 	gen := &fileSearchGenerator{searchTerm: searchTerm}
-	rt := orchid.NewRuntime(gen)
+	readTool := orchid.Tool{
+		Name:        "read",
+		Description: "Read a file",
+		Handler: func(args map[string]string) (string, error) {
+			content, ok := files[args["path"]]
+			if !ok {
+				return "", fmt.Errorf("file not found: %s", args["path"])
+			}
+			return content, nil
+		},
+	}
 
-	rt.Effects.RegisterHandler("read", func(args map[string]string) (string, error) {
-		content, ok := files[args["path"]]
-		if !ok {
-			return "", fmt.Errorf("file not found: %s", args["path"])
-		}
-		return content, nil
-	})
+	wf := orchid.NewWorkflow(gen, readTool)
 
-	parent := rt.Spawn(
-		orchid.ProcessSpec{Name: "coordinator", SystemPrompt: "You coordinate file searches."},
-		[]orchid.Capability{orchid.CapRead},
-		"",
-	)
-
-	type childResult struct {
+	type result struct {
 		file  string
 		found bool
 	}
-	var results []childResult
 
 	filenames := sortedKeys(files)
+	results := make([]result, len(filenames))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 
-	for _, filename := range filenames {
-		child := rt.Fork(parent.ID, orchid.ProcessSpec{
-			Name:         fmt.Sprintf("checker-%s", filename),
-			SystemPrompt: "You check if a file contains a search term.",
-		}, []orchid.Capability{orchid.CapRead})
-
-		child.View.Filter = func(e orchid.Event) bool {
-			return e.ProcessID == child.ID
-		}
-
-		rt.Inject(child.ID, fmt.Sprintf("check %s for %s", filename, searchTerm))
-		rt.Step(context.Background(), child.ID)
-
-		text, _, _ := rt.Step(context.Background(), child.ID)
-
-		found := text == "FOUND"
-		results = append(results, childResult{file: filename, found: found})
-		rt.Join(parent.ID, child.ID, fmt.Sprintf("%s: %s", filename, text), orchid.TokenUsage{})
+	for i, filename := range filenames {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			text, _, err := wf.Run(context.Background(), "You check if a file contains a search term.", fmt.Sprintf("check %s for %s", filename, searchTerm))
+			if err != nil {
+				t.Errorf("Run failed for %s: %v", filename, err)
+				return
+			}
+			mu.Lock()
+			results[i] = result{file: filename, found: text == "FOUND"}
+			mu.Unlock()
+		}()
 	}
+	wg.Wait()
 
 	for _, r := range results {
 		if r.found != expected[r.file] {
 			t.Errorf("file %s: got found=%v, want found=%v", r.file, r.found, expected[r.file])
 		}
 	}
-
-	allEvents := rt.Log.All()
-	forkCount := 0
-	joinCount := 0
-	for _, e := range allEvents {
-		if e.Type == orchid.EventFork {
-			forkCount++
-		}
-		if e.Type == orchid.EventJoin {
-			joinCount++
-		}
-	}
-	if forkCount != 10 {
-		t.Errorf("expected 10 forks, got %d", forkCount)
-	}
-	if joinCount != 10 {
-		t.Errorf("expected 10 joins, got %d", joinCount)
-	}
-
-	parentCtx := orchid.BuildContext(parent)
-	if len(parentCtx.ChildResults) != 10 {
-		t.Errorf("expected 10 child results in parent context, got %d", len(parentCtx.ChildResults))
-	}
-
-	t.Logf("Search term: %q", searchTerm)
-	for _, r := range results {
-		t.Logf("  %s: found=%v (expected=%v)", r.file, r.found, expected[r.file])
-	}
-	t.Logf("Total events: %d", len(allEvents))
 }
 
 type fileSearchGenerator struct {
@@ -123,7 +90,6 @@ type fileSearchGenerator struct {
 }
 
 func (g *fileSearchGenerator) Generate(ctx orchid.Context) orchid.Proposal {
-	// got tool results back — report
 	if len(ctx.ToolResults) > 0 {
 		for _, tr := range ctx.ToolResults {
 			if strings.Contains(tr.Result, g.searchTerm) {
@@ -133,7 +99,6 @@ func (g *fileSearchGenerator) Generate(ctx orchid.Context) orchid.Proposal {
 		return orchid.Proposal{Text: "NOT_FOUND"}
 	}
 
-	// got a "check <file>" instruction — read the file
 	if strings.HasPrefix(ctx.LastInput, "check ") {
 		parts := strings.SplitN(ctx.LastInput, " for ", 2)
 		filename := strings.TrimPrefix(parts[0], "check ")
@@ -148,42 +113,41 @@ func (g *fileSearchGenerator) Generate(ctx orchid.Context) orchid.Proposal {
 	return orchid.Proposal{Text: "[unexpected state]"}
 }
 
-func TestMultiAgentStoreImplementation(t *testing.T) {
+func TestWorkflow_Run_StoreImplementation(t *testing.T) {
 	gen := &storeGenerator{}
-	rt := orchid.NewRuntime(gen)
 
-	// given: a planner that decides what functions we need
-	planner := rt.Spawn(
-		orchid.ProcessSpec{Name: "planner", SystemPrompt: "You design Go interfaces."},
-		nil, "",
-	)
-	rt.Inject(planner.ID, "design a key-value store")
-	planText, _, _ := rt.Step(context.Background(), planner.ID)
+	wf := orchid.NewWorkflow(gen)
+	planText, _, err := wf.Run(context.Background(), "You design Go interfaces.", "design a key-value store")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	functions := strings.Split(planText, ",")
 	if len(functions) != 3 {
 		t.Fatalf("expected 3 functions, got %d: %v", len(functions), functions)
 	}
 
-	// when: we fork a worker per function and join
 	var implementations []string
-	for i, fn := range functions {
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	for _, fn := range functions {
 		fn = strings.TrimSpace(fn)
-		child := rt.Fork(planner.ID, orchid.ProcessSpec{
-			Name:         fmt.Sprintf("impl-%d", i),
-			SystemPrompt: "You implement Go functions.",
-		}, nil)
-		child.View.Filter = func(e orchid.Event) bool {
-			return e.ProcessID == child.ID
-		}
-
-		rt.Inject(child.ID, fmt.Sprintf("implement %s", fn))
-		text, _, _ := rt.Step(context.Background(), child.ID)
-		rt.Join(planner.ID, child.ID, text, orchid.TokenUsage{})
-		implementations = append(implementations, text)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			text, _, err := wf.Run(context.Background(), "You implement Go functions.", fmt.Sprintf("implement %s", fn))
+			if err != nil {
+				t.Errorf("Run failed for %s: %v", fn, err)
+				return
+			}
+			mu.Lock()
+			implementations = append(implementations, text)
+			mu.Unlock()
+		}()
 	}
+	wg.Wait()
 
-	// then: we got an implementation for each function
 	if len(implementations) != 3 {
 		t.Fatalf("expected 3 implementations, got %d", len(implementations))
 	}
@@ -192,36 +156,6 @@ func TestMultiAgentStoreImplementation(t *testing.T) {
 			t.Errorf("implementation %d doesn't look like Go code: %s", i, impl)
 		}
 	}
-
-	// then: the planner's context has all child results
-	plannerCtx := orchid.BuildContext(planner)
-	if len(plannerCtx.ChildResults) != 3 {
-		t.Errorf("expected 3 child results, got %d", len(plannerCtx.ChildResults))
-	}
-
-	// then: audit log shows fork/join structure
-	allEvents := rt.Log.All()
-	forks, joins := 0, 0
-	for _, e := range allEvents {
-		if e.Type == orchid.EventFork {
-			forks++
-		}
-		if e.Type == orchid.EventJoin {
-			joins++
-		}
-	}
-	if forks != 3 {
-		t.Errorf("expected 3 forks, got %d", forks)
-	}
-	if joins != 3 {
-		t.Errorf("expected 3 joins, got %d", joins)
-	}
-
-	t.Logf("Plan: %s", planText)
-	for i, impl := range implementations {
-		t.Logf("Implementation %d:\n%s", i, impl)
-	}
-	t.Logf("Total events: %d", len(allEvents))
 }
 
 type storeGenerator struct{}
@@ -263,209 +197,38 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
-func echoGenerator() orchid.Generator {
-	return orchid.GeneratorFunc(func(ctx orchid.Context) orchid.Proposal {
-		return orchid.Proposal{Text: "echo: " + ctx.LastInput}
-	})
-}
-
-func TestAgent_Fork_VariadicInheritsTools(t *testing.T) {
+func TestWorkflow_Run_WithTools(t *testing.T) {
 	handlerCalled := false
 	gen := orchid.GeneratorFunc(func(ctx orchid.Context) orchid.Proposal {
+		if len(ctx.ToolResults) > 0 {
+			return orchid.Proposal{Text: "got: " + ctx.ToolResults[0].Result}
+		}
 		return orchid.Proposal{
 			Text:    "reading",
 			Effects: []orchid.ProposedEffect{{Tool: "read", Args: map[string]string{"path": "/tmp"}}},
 		}
 	})
 
-	a := orchid.New(gen)
-	a.Can(orchid.Tool{
+	readTool := orchid.Tool{
 		Name:        "read",
 		Description: "Read a file",
 		Handler: func(args map[string]string) (string, error) {
 			handlerCalled = true
 			return "content", nil
 		},
-	})
-	a.System("test")
+	}
 
-	results, err := a.Fork("read /tmp").Join()
+	wf := orchid.NewWorkflow(gen, readTool)
+	text, _, err := wf.Run(context.Background(), "test", "read /tmp")
 
 	if err != nil {
 		t.Fatal(err)
-	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
 	}
 	if !handlerCalled {
-		t.Fatal("inherited handler was not called")
+		t.Fatal("handler was not called")
 	}
-}
-
-func TestAgent_Fork_JoinCollectsInOrder(t *testing.T) {
-	a := orchid.New(echoGenerator())
-
-	results, err := a.Fork("first", "second", "third").Join()
-
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(results) != 3 {
-		t.Fatalf("expected 3 results, got %d", len(results))
-	}
-	for i, want := range []string{"echo: first", "echo: second", "echo: third"} {
-		if results[i].Text != want {
-			t.Errorf("results[%d].Text = %q, want %q", i, results[i].Text, want)
-		}
-		if results[i].Index != i {
-			t.Errorf("results[%d].Index = %d, want %d", i, results[i].Index, i)
-		}
-	}
-}
-
-func TestAgent_Fork_EmptyReturnsEmpty(t *testing.T) {
-	a := orchid.New(echoGenerator())
-
-	results, err := a.Fork().Join()
-
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(results) != 0 {
-		t.Fatalf("expected 0 results, got %d", len(results))
-	}
-}
-
-func TestAgent_Fork_StreamDeliversResults(t *testing.T) {
-	a := orchid.New(echoGenerator())
-
-	count := 0
-	for r := range a.Fork("a", "b", "c").Stream() {
-		if r.Err != nil {
-			t.Fatal(r.Err)
-		}
-		if !strings.HasPrefix(r.Text, "echo: ") {
-			t.Errorf("unexpected text: %q", r.Text)
-		}
-		count++
-	}
-	if count != 3 {
-		t.Fatalf("streamed %d results, want 3", count)
-	}
-}
-
-func TestForkAgents_DifferentTools(t *testing.T) {
-	gen := orchid.GeneratorFunc(func(ctx orchid.Context) orchid.Proposal {
-		return orchid.Proposal{
-			Text:    "reading",
-			Effects: []orchid.ProposedEffect{{Tool: "read", Args: map[string]string{}}},
-		}
-	})
-
-	agentA := orchid.New(gen)
-	agentA.Can(orchid.Tool{
-		Name: "read", Description: "read",
-		Handler: func(args map[string]string) (string, error) { return "from-A", nil },
-	})
-	agentA.System("agent A")
-	agentA.GiveTask("go")
-
-	agentB := orchid.New(gen)
-	agentB.Can(orchid.Tool{
-		Name: "read", Description: "read",
-		Handler: func(args map[string]string) (string, error) { return "from-B", nil },
-	})
-	agentB.System("agent B")
-	agentB.GiveTask("go")
-
-	results, err := orchid.ForkAgents(agentA, agentB).Join()
-
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
-	}
-
-	resultMap := map[int]string{}
-	for _, r := range results {
-		resultMap[r.Index] = r.Text
-	}
-
-	if resultMap[0] != "reading" || resultMap[1] != "reading" {
-		t.Fatalf("unexpected results: %v", resultMap)
-	}
-}
-
-func TestForkAgents_Empty(t *testing.T) {
-	results, err := orchid.ForkAgents().Join()
-
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(results) != 0 {
-		t.Fatalf("expected 0 results, got %d", len(results))
-	}
-}
-
-func TestAgent_Fork_SetMaxSteps(t *testing.T) {
-	stepCount := 0
-	gen := orchid.GeneratorFunc(func(ctx orchid.Context) orchid.Proposal {
-		stepCount++
-		return orchid.Proposal{
-			Text:    "working",
-			Effects: []orchid.ProposedEffect{{Tool: "read", Args: map[string]string{"n": fmt.Sprintf("%d", stepCount)}}},
-		}
-	})
-
-	a := orchid.New(gen)
-	a.Can(orchid.Tool{
-		Name: "read", Description: "read",
-		Handler: func(args map[string]string) (string, error) { return "data", nil },
-	})
-
-	g := a.Fork("go")
-	g.SetMaxSteps(2)
-	g.Join()
-
-	if stepCount != 2 {
-		t.Fatalf("stepCount = %d, want 2", stepCount)
-	}
-}
-
-func TestAgent_Fork_OnStep(t *testing.T) {
-	callbackCalled := false
-	stepCount := 0
-	gen := orchid.GeneratorFunc(func(ctx orchid.Context) orchid.Proposal {
-		stepCount++
-		if stepCount == 1 {
-			return orchid.Proposal{
-				Text:    "working",
-				Effects: []orchid.ProposedEffect{{Tool: "read", Args: map[string]string{}}},
-			}
-		}
-		return orchid.Proposal{Text: "done"}
-	})
-
-	a := orchid.New(gen)
-	a.Can(orchid.Tool{
-		Name: "read", Description: "read",
-		Handler: func(args map[string]string) (string, error) { return "data", nil },
-	})
-
-	g := a.Fork("go")
-	g.OnStep(func(step int, text string, results []orchid.EffectResult) (string, bool) {
-		callbackCalled = true
-		return "", false
-	})
-
-	results, _ := g.Join()
-
-	if !callbackCalled {
-		t.Fatal("OnStep callback was not called")
-	}
-	if results[0].Text != "done" {
-		t.Fatalf("text = %q, want %q", results[0].Text, "done")
+	if text != "got: content" {
+		t.Fatalf("text = %q, want %q", text, "got: content")
 	}
 }
 
@@ -474,51 +237,23 @@ func TestBuildProcessTree_Structure(t *testing.T) {
 		return orchid.Proposal{Text: "echo: " + ctx.LastInput, InputTokens: 50, OutputTokens: 10}
 	})
 
-	a := orchid.New(gen)
-	a.System("test")
-	results, _ := a.Fork("task A", "task B", "task C").Join()
-	_ = results
+	wf := orchid.NewWorkflow(gen)
 
-	roots := orchid.BuildProcessTree(a.Log())
-
-	if len(roots) != 1 {
-		t.Fatalf("expected 1 root, got %d", len(roots))
+	var wg sync.WaitGroup
+	tasks := []string{"task A", "task B", "task C"}
+	for _, task := range tasks {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			wf.Run(context.Background(), "test", task)
+		}()
 	}
-	root := roots[0]
-	if root.Name != "coordinator" {
-		t.Fatalf("root.Name = %q, want %q", root.Name, "coordinator")
-	}
-	if len(root.Children) != 3 {
-		t.Fatalf("expected 3 children, got %d", len(root.Children))
-	}
-}
+	wg.Wait()
 
-func TestBuildProcessTree_TokenRollup(t *testing.T) {
-	gen := orchid.GeneratorFunc(func(ctx orchid.Context) orchid.Proposal {
-		return orchid.Proposal{Text: "ok", InputTokens: 100, OutputTokens: 20}
-	})
+	roots := orchid.BuildProcessTree(wf.Log.All())
 
-	a := orchid.New(gen)
-	a.Fork("a", "b").Join()
-
-	roots := orchid.BuildProcessTree(a.Log())
-	root := roots[0]
-
-	if root.OwnUsage.InputTokens != 0 {
-		t.Fatalf("coordinator own tokens = %d, want 0", root.OwnUsage.InputTokens)
-	}
-
-	if root.TotalUsage.InputTokens != 200 {
-		t.Fatalf("coordinator total input = %d, want 200 (2 children × 100)", root.TotalUsage.InputTokens)
-	}
-	if root.TotalUsage.OutputTokens != 40 {
-		t.Fatalf("coordinator total output = %d, want 40", root.TotalUsage.OutputTokens)
-	}
-
-	for _, child := range root.Children {
-		if child.OwnUsage.InputTokens != 100 {
-			t.Fatalf("child own input = %d, want 100", child.OwnUsage.InputTokens)
-		}
+	if len(roots) != 3 {
+		t.Fatalf("expected 3 roots, got %d", len(roots))
 	}
 }
 
@@ -527,26 +262,18 @@ func TestPrintTree_Output(t *testing.T) {
 		return orchid.Proposal{Text: "ok", InputTokens: 100, OutputTokens: 20}
 	})
 
-	a := orchid.New(gen)
-	a.Fork("a", "b").Join()
+	wf := orchid.NewWorkflow(gen)
+	wf.Run(context.Background(), "worker", "a")
+	wf.Run(context.Background(), "worker", "b")
 
-	roots := orchid.BuildProcessTree(a.Log())
+	roots := orchid.BuildProcessTree(wf.Log.All())
 
 	var buf bytes.Buffer
 	orchid.PrintTree(&buf, roots)
 
 	output := buf.String()
-	if !strings.Contains(output, "coordinator") {
-		t.Fatalf("output missing coordinator:\n%s", output)
-	}
-	if !strings.Contains(output, "worker-0") {
-		t.Fatalf("output missing worker-0:\n%s", output)
-	}
-	if !strings.Contains(output, "worker-1") {
-		t.Fatalf("output missing worker-1:\n%s", output)
-	}
-	if !strings.Contains(output, "total=200/40") {
-		t.Fatalf("output missing rollup total:\n%s", output)
+	if !strings.Contains(output, "worker") {
+		t.Fatalf("output missing worker:\n%s", output)
 	}
 	t.Logf("PrintTree output:\n%s", output)
 }

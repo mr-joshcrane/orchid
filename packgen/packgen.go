@@ -1,11 +1,13 @@
 package packgen
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/mr-joshcrane/orchid"
 )
@@ -59,10 +61,10 @@ func plan(p Project) (string, []string) {
 	if p.Plan != "" {
 		result = p.Plan
 	} else {
-		a := orchid.New(p.Gen)
-		a.System("You are a Go architect. When asked to design a package, respond with ONLY:\n1. The type definitions (structs, named types) needed\n2. The full function/method signatures\nUse valid Go syntax. No implementations, no comments, no explanation.")
-		a.GiveTask(p.Spec)
-		result, _, _ = a.Step()
+		wf := orchid.NewWorkflow(p.Gen)
+		result, _, _ = wf.Run(context.Background(),
+			"You are a Go architect. When asked to design a package, respond with ONLY:\n1. The type definitions (structs, named types) needed\n2. The full function/method signatures\nUse valid Go syntax. No implementations, no comments, no explanation.",
+			p.Spec)
 	}
 
 	var signatures []string
@@ -76,22 +78,29 @@ func plan(p Project) (string, []string) {
 }
 
 func implement(p Project, typePlan string, signatures []string) []string {
-	a := orchid.New(p.Gen)
-	a.System("You are a Go developer. Respond with ONLY the Go function or method body. No package, no imports, no type definitions, no markdown, no explanation. Use the exact types and signatures provided.")
+	purpose := "You are a Go developer. Respond with ONLY the Go function or method body. No package, no imports, no type definitions, no markdown, no explanation. Use the exact types and signatures provided."
 
-	tasks := make([]string, len(signatures))
+	results := make([]string, len(signatures))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
 	for i, sig := range signatures {
-		tasks[i] = fmt.Sprintf(
+		task := fmt.Sprintf(
 			"Here are the types and signatures for the %s package:\n\n%s\n\nImplement ONLY this one function:\n%s",
 			p.Name, typePlan, sig)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			wf := orchid.NewWorkflow(p.Gen)
+			text, _, _ := wf.Run(context.Background(), purpose, task)
+			mu.Lock()
+			results[i] = text
+			mu.Unlock()
+		}()
 	}
+	wg.Wait()
 
-	results, _ := a.Fork(tasks...).Join()
-	var out []string
-	for _, r := range results {
-		out = append(out, r.Text)
-	}
-	return out
+	return results
 }
 
 func integrate(p Project, typePlan string, signatures []string, implementations []string) string {
@@ -100,15 +109,14 @@ func integrate(p Project, typePlan string, signatures []string, implementations 
 		fmt.Fprintf(&parts, "// %s\n%s\n\n", signatures[i], r)
 	}
 
-	a := orchid.New(p.Gen)
-	a.System("You are a Go developer. You take function implementations and assemble them into a complete, valid, compilable Go package. You decide what files to create, what types are needed, and what imports go where. Output the complete package as a single block with file boundaries marked as '// FILE: filename.go' on their own line. No markdown fences, no explanation.")
-
-	a.GiveTask(fmt.Sprintf(
-		"Assemble these function implementations into a complete Go package called %s. "+
-			"Add whatever types, structs, constructors, and imports are needed to make it compile. "+
-			"Mark file boundaries with '// FILE: filename.go' lines.\n\n%s",
-		p.Name, parts.String()))
-	result, _, _ := a.Step()
+	wf := orchid.NewWorkflow(p.Gen)
+	result, _, _ := wf.Run(context.Background(),
+		"You are a Go developer. You take function implementations and assemble them into a complete, valid, compilable Go package. You decide what files to create, what types are needed, and what imports go where. Output the complete package as a single block with file boundaries marked as '// FILE: filename.go' on their own line. No markdown fences, no explanation.",
+		fmt.Sprintf(
+			"Assemble these function implementations into a complete Go package called %s. "+
+				"Add whatever types, structs, constructors, and imports are needed to make it compile. "+
+				"Mark file boundaries with '// FILE: filename.go' lines.\n\n%s",
+			p.Name, parts.String()))
 
 	return result
 }
@@ -137,13 +145,12 @@ func compileLoop(p Project, code string, outDir string, cfg Config) string {
 }
 
 func fixCode(p Project, code string, errors string) string {
-	fixer := orchid.New(p.Gen)
-	fixer.System("You are a Go developer fixing compile errors. Output the complete fixed package. Use '// FILE: filename.go' to mark file boundaries. No markdown fences, no explanation.")
-
-	fixer.GiveTask(fmt.Sprintf(
-		"This Go package has compile errors. Fix ALL of them.\n\nISSUES:\n%s\n\nCURRENT CODE:\n%s",
-		errors, code))
-	fixed, _, _ := fixer.Step()
+	wf := orchid.NewWorkflow(p.Gen)
+	fixed, _, _ := wf.Run(context.Background(),
+		"You are a Go developer fixing compile errors. Output the complete fixed package. Use '// FILE: filename.go' to mark file boundaries. No markdown fences, no explanation.",
+		fmt.Sprintf(
+			"This Go package has compile errors. Fix ALL of them.\n\nISSUES:\n%s\n\nCURRENT CODE:\n%s",
+			errors, code))
 
 	return fixed
 }

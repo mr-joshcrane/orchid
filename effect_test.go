@@ -75,18 +75,6 @@ func TestEffectTable_CheckPolicies_OneRejects(t *testing.T) {
 	}
 }
 
-func TestEffectTable_InFlight(t *testing.T) {
-	et := NewEffectTable()
-	et.Track(&Effect{ID: "e1", State: EffectStarted})
-	et.Track(&Effect{ID: "e2", State: EffectPlanned})
-	et.Track(&Effect{ID: "e3", State: EffectStarted})
-
-	inflight := et.InFlight()
-	if len(inflight) != 2 {
-		t.Fatalf("InFlight len = %d, want 2", len(inflight))
-	}
-}
-
 func TestEffectState_String(t *testing.T) {
 	if EffectPlanned.String() != "Planned" {
 		t.Fatalf("got %q", EffectPlanned.String())

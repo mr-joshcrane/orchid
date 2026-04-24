@@ -33,11 +33,11 @@ type ProposedEffect struct {
 
 type Context struct {
 	Ctx            context.Context
-	Spec           ProcessSpec
+	Name           string
+	Purpose        string
 	Events         []Event
 	LastInput      string
 	ToolResults    []ToolResultEntry
-	ChildResults   []ChildResultEntry
 	Step           int
 	Tools          []ToolDefinition
 	History        any
@@ -49,14 +49,10 @@ type ToolResultEntry struct {
 	Result string
 }
 
-type ChildResultEntry struct {
-	ChildID string
-	Result  string
-}
-
 type ToolDefinition struct {
 	Name        string
 	Description string
+	Params      map[string]Param
 }
 
 type Generator interface {
@@ -104,4 +100,27 @@ func newPromptID() string {
 	b := make([]byte, 8)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+func paramSchema(params map[string]Param) map[string]any {
+	properties := make(map[string]any, len(params))
+	var required []string
+	for name, p := range params {
+		prop := map[string]any{"type": p.Type}
+		if p.Description != "" {
+			prop["description"] = p.Description
+		}
+		properties[name] = prop
+		if p.Required {
+			required = append(required, name)
+		}
+	}
+	schema := map[string]any{
+		"type":       "object",
+		"properties": properties,
+	}
+	if len(required) > 0 {
+		schema["required"] = required
+	}
+	return schema
 }

@@ -17,19 +17,14 @@ const (
 	EventEffectIntent
 	EventEffectObserved
 	EventEffectRejected
-	EventMessage // inter-process message
-	EventFork    // child process created
-	EventJoin    // child result imported
 	EventProcessSpawned
-	EventProcessExited
 )
 
 func (t EventType) String() string {
 	names := []string{
 		"UserInput", "AssistantOutput",
 		"EffectIntent", "EffectObserved", "EffectRejected",
-		"Message", "Fork", "Join",
-		"ProcessSpawned", "ProcessExited",
+		"ProcessSpawned",
 	}
 	if int(t) < len(names) {
 		return names[t]
@@ -48,22 +43,21 @@ type Event struct {
 
 // EventLog is an append-only, concurrency-safe log.
 type EventLog struct {
-	mu       sync.RWMutex
-	events   []Event
-	nextID   uint64
-	listener chan<- Event
+	mu     sync.RWMutex
+	events []Event
+	nextID uint64
+	sink   io.Writer
 }
 
 func NewEventLog() *EventLog {
 	return &EventLog{}
 }
 
-// SetListener sets (or clears) the channel that receives copies of appended events.
-// Pass nil to detach.
-func (l *EventLog) SetListener(ch chan<- Event) {
+// SetSink sets an io.Writer that receives each event as a JSON line on append.
+func (l *EventLog) SetSink(w io.Writer) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.listener = ch
+	l.sink = w
 }
 
 func (l *EventLog) Append(e Event) uint64 {
@@ -73,10 +67,17 @@ func (l *EventLog) Append(e Event) uint64 {
 	e.Timestamp = time.Now()
 	l.events = append(l.events, e)
 	l.nextID++
-	if l.listener != nil {
-		select {
-		case l.listener <- e:
-		default:
+	if l.sink != nil {
+		data, err := json.Marshal(eventRecord{
+			ID:        e.ID,
+			Type:      e.Type.String(),
+			Timestamp: e.Timestamp,
+			ProcessID: e.ProcessID,
+			Data:      e.Data,
+		})
+		if err == nil {
+			data = append(data, '\n')
+			l.sink.Write(data)
 		}
 	}
 	return e.ID

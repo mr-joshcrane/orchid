@@ -12,14 +12,11 @@ import (
 
 type OpenAIGenerator struct {
 	endpoint string
-	model    string
 }
 
-func NewOpenAIGenerator(endpoint, model string) *OpenAIGenerator {
-	return &OpenAIGenerator{endpoint: endpoint, model: model}
+func NewOpenAIGenerator(endpoint string) *OpenAIGenerator {
+	return &OpenAIGenerator{endpoint: endpoint}
 }
-
-func (g *OpenAIGenerator) Model() string { return g.model }
 
 type openAIMessage struct {
 	Role       string       `json:"role"`
@@ -46,7 +43,7 @@ func (g *OpenAIGenerator) Generate(ctx Context) Proposal {
 	}
 
 	if len(history) == 0 {
-		history = append(history, openAIMessage{Role: "system", Content: ctx.Spec.SystemPrompt})
+		history = append(history, openAIMessage{Role: "system", Content: ctx.Purpose})
 	}
 
 	for _, r := range ctx.PendingResults {
@@ -69,7 +66,7 @@ func (g *OpenAIGenerator) Generate(ctx Context) Proposal {
 	}
 
 	body := map[string]any{
-		"model":       g.model,
+		"model":       "",
 		"messages":    history,
 		"temperature": 0,
 	}
@@ -98,7 +95,7 @@ func (g *OpenAIGenerator) Generate(ctx Context) Proposal {
 }
 
 func (g *OpenAIGenerator) call(ctx Context, payload []byte) ([]byte, error) {
-	url := strings.TrimRight(g.endpoint, "/") + "/v1/chat/completions"
+	url := strings.TrimRight(g.endpoint, "/") + "/chat/completions"
 
 	requestCtx := ctx.Ctx
 	if requestCtx == nil {
@@ -177,10 +174,7 @@ func (g *OpenAIGenerator) buildTools(tools []ToolDefinition) []map[string]any {
 			"function": map[string]any{
 				"name":        t.Name,
 				"description": t.Description,
-				"parameters": map[string]any{
-					"type":       "object",
-					"properties": map[string]any{},
-				},
+				"parameters":  paramSchema(t.Params),
 			},
 		})
 	}
