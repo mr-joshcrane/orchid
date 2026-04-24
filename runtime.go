@@ -16,6 +16,7 @@ type Workflow struct {
 	Effects   *EffectTable
 	gen       Generator
 	tools     []Tool
+	idPrefix  string
 	nextPID   atomic.Uint64
 }
 
@@ -33,12 +34,25 @@ func NewWorkflow(gen Generator, tools ...Tool) *Workflow {
 	return wf
 }
 
+func (w *Workflow) WithIDPrefix(prefix string) *Workflow {
+	w.idPrefix = prefix
+	return w
+}
+
 func (w *Workflow) newProcessID() string {
-	return fmt.Sprintf("proc_%d", w.nextPID.Add(1))
+	id := fmt.Sprintf("proc_%d", w.nextPID.Add(1))
+	if w.idPrefix != "" {
+		return w.idPrefix + "_" + id
+	}
+	return id
 }
 
 func (w *Workflow) newEffectID() string {
-	return fmt.Sprintf("eff_%d", w.nextPID.Add(1))
+	id := fmt.Sprintf("eff_%d", w.nextPID.Add(1))
+	if w.idPrefix != "" {
+		return w.idPrefix + "_" + id
+	}
+	return id
 }
 
 func (w *Workflow) Spawn(name, purpose string, caps []Capability, parentID string) *Process {
