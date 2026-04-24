@@ -309,7 +309,7 @@ func TestWorkflow_StepUntilDone_MultiStep(t *testing.T) {
 	p := wf.Spawn("agent", "", []Capability{"read"}, "")
 	wf.Inject(p.ID, "go")
 
-	text, usage, err := wf.StepUntilDone(context.Background(), p.ID, 50, nil)
+	text, usage, err := wf.StepUntilDone(context.Background(), p.ID, Constraints{MaxSteps: 50}, nil)
 
 	if err != nil {
 		t.Fatal(err)
@@ -342,7 +342,7 @@ func TestWorkflow_StepUntilDone_MaxStepsCap(t *testing.T) {
 	p := wf.Spawn("agent", "", []Capability{"read"}, "")
 	wf.Inject(p.ID, "go")
 
-	wf.StepUntilDone(context.Background(), p.ID, 3, nil)
+	wf.StepUntilDone(context.Background(), p.ID, Constraints{MaxSteps: 3}, nil)
 
 	if stepCount != 3 {
 		t.Fatalf("stepCount = %d, want 3 (capped by maxSteps)", stepCount)
@@ -375,7 +375,7 @@ func TestWorkflow_StepUntilDone_CallbackInjects(t *testing.T) {
 		return "injected message", false
 	}
 
-	text, _, _ := wf.StepUntilDone(context.Background(), p.ID, 50, cb)
+	text, _, _ := wf.StepUntilDone(context.Background(), p.ID, Constraints{MaxSteps: 50}, cb)
 
 	if text != "got: injected message" {
 		t.Fatalf("text = %q, want callback injection visible", text)
@@ -408,7 +408,7 @@ func TestWorkflow_StepUntilDone_CallbackStops(t *testing.T) {
 		return "", false
 	}
 
-	wf.StepUntilDone(context.Background(), p.ID, 50, cb)
+	wf.StepUntilDone(context.Background(), p.ID, Constraints{MaxSteps: 50}, cb)
 
 	if stepCount != 3 {
 		t.Fatalf("stepCount = %d, want 3 (stop after step 1 + final)", stepCount)
@@ -437,7 +437,7 @@ func TestWorkflow_StepUntilDone_NilCallback(t *testing.T) {
 	p := wf.Spawn("agent", "", []Capability{"read"}, "")
 	wf.Inject(p.ID, "go")
 
-	text, _, _ := wf.StepUntilDone(context.Background(), p.ID, 50, nil)
+	text, _, _ := wf.StepUntilDone(context.Background(), p.ID, Constraints{MaxSteps: 50}, nil)
 
 	if text != "done" {
 		t.Fatalf("text = %q, want %q", text, "done")

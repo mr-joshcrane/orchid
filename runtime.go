@@ -153,9 +153,32 @@ func (w *Workflow) Step(ctx context.Context, processID string) (string, []Effect
 
 type StepCallback func(step int, text string, results []EffectResult) (inject string, stop bool)
 
-func (w *Workflow) StepUntilDone(ctx context.Context, processID string, maxSteps int, onStep StepCallback) (string, TokenUsage, error) {
+type Constraints struct {
+	MaxSteps  int
+	MaxTokens int
+}
+
+type RunOption func(*Constraints)
+
+func WithConstraints(c Constraints) RunOption {
+	return func(dst *Constraints) {
+		if c.MaxSteps > 0 {
+			dst.MaxSteps = c.MaxSteps
+		}
+		if c.MaxTokens > 0 {
+			dst.MaxTokens = c.MaxTokens
+		}
+	}
+}
+
+func (w *Workflow) StepUntilDone(ctx context.Context, processID string, c Constraints, onStep StepCallback) (string, TokenUsage, error) {
 	var totalUsage TokenUsage
 	var lastText string
+
+	maxSteps := c.MaxSteps
+	if maxSteps == 0 {
+		maxSteps = 50
+	}
 
 	for step := 0; step < maxSteps; step++ {
 		text, results, usage := w.Step(ctx, processID)
@@ -166,6 +189,10 @@ func (w *Workflow) StepUntilDone(ctx context.Context, processID string, maxSteps
 		p := w.Processes.Get(processID)
 		if p != nil && p.Err != nil {
 			return "", totalUsage, p.Err
+		}
+
+		if c.MaxTokens > 0 && totalUsage.InputTokens+totalUsage.OutputTokens >= c.MaxTokens {
+			break
 		}
 
 		if len(results) == 0 {
@@ -192,7 +219,12 @@ func (w *Workflow) StepUntilDone(ctx context.Context, processID string, maxSteps
 	return lastText, totalUsage, nil
 }
 
-func (w *Workflow) Run(ctx context.Context, purpose string, task string) (string, TokenUsage, error) {
+func (w *Workflow) Run(ctx context.Context, purpose string, task string, opts ...RunOption) (string, TokenUsage, error) {
+	c := Constraints{}
+	for _, opt := range opts {
+		opt(&c)
+	}
+
 	caps := make([]Capability, len(w.tools))
 	for i, t := range w.tools {
 		caps[i] = Capability(t.Name)
@@ -211,7 +243,7 @@ func (w *Workflow) Run(ctx context.Context, purpose string, task string) (string
 	}
 
 	w.Inject(p.ID, task)
-	return w.StepUntilDone(ctx, p.ID, 50, nil)
+	return w.StepUntilDone(ctx, p.ID, c, nil)
 }
 
 type EffectResult struct {
