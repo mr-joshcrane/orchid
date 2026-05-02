@@ -68,6 +68,12 @@ func (l *EventLog) SetSink(w io.Writer) {
 	l.sink = w
 }
 
+func (l *EventLog) Sink() io.Writer {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.sink
+}
+
 func (l *EventLog) Append(e Event) uint64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
