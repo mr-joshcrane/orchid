@@ -12,19 +12,6 @@ import (
 	"time"
 )
 
-type Param struct {
-	Type        string
-	Description string
-	Required    bool
-}
-
-type Tool struct {
-	Name        string
-	Description string
-	Params      map[string]Param
-	Handler     EffectHandler
-}
-
 // PrintLog writes a human-readable audit trail of events.
 func PrintLog(w io.Writer, events []Event) {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)

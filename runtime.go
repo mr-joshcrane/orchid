@@ -20,6 +20,19 @@ type Workflow struct {
 	nextPID   atomic.Uint64
 }
 
+type WorkflowOption func(*Workflow)
+
+func WithTools(tools ...Tool) WorkflowOption {
+	return func(w *Workflow) {
+		for _, t := range tools {
+			if err := w.Effects.RegisterTool(t); err != nil {
+				panic(err.Error())
+			}
+			w.tools = append(w.tools, t)
+		}
+	}
+}
+
 func NewWorkflow(gen Generator, tools ...Tool) *Workflow {
 	wf := &Workflow{
 		Log:       NewEventLog(),
@@ -30,6 +43,19 @@ func NewWorkflow(gen Generator, tools ...Tool) *Workflow {
 	}
 	for _, t := range tools {
 		wf.Effects.RegisterHandler(t.Name, t.Handler)
+	}
+	return wf
+}
+
+func NewWorkflowWithOptions(gen Generator, opts ...WorkflowOption) *Workflow {
+	wf := &Workflow{
+		Log:       NewEventLog(),
+		Processes: NewProcessTable(),
+		Effects:   NewEffectTable(),
+		gen:       gen,
+	}
+	for _, opt := range opts {
+		opt(wf)
 	}
 	return wf
 }
@@ -141,7 +167,7 @@ func (w *Workflow) Step(ctx context.Context, processID string) (string, []Effect
 
 	var results []EffectResult
 	for _, pe := range proposal.Effects {
-		result := w.processEffect(p, pe)
+		result := w.processEffect(ctx, p, pe)
 		results = append(results, result)
 	}
 
@@ -254,7 +280,24 @@ type EffectResult struct {
 	Error     string
 }
 
-func (w *Workflow) processEffect(p *Process, pe ProposedEffect) EffectResult {
+func (w *Workflow) invokeHandler(ctx context.Context, p *Process, pe ProposedEffect) (string, bool, error) {
+	if ch, ok := w.Effects.GetContextualHandler(pe.Tool); ok {
+		hctx := HandlerContext{
+			Ctx:       ctx,
+			ProcessID: p.ID,
+			LogAppend: func(e Event) { w.Log.Append(e) },
+		}
+		result, err := ch(hctx, pe.Args)
+		return result, true, err
+	}
+	if h, ok := w.Effects.GetHandler(pe.Tool); ok {
+		result, err := h(pe.Args)
+		return result, true, err
+	}
+	return "", false, nil
+}
+
+func (w *Workflow) processEffect(ctx context.Context, p *Process, pe ProposedEffect) EffectResult {
 	cacheKey := effectCacheKey(pe)
 	if p.EffectCache != nil {
 		if cached, ok := p.EffectCache[cacheKey]; ok {
@@ -322,8 +365,9 @@ func (w *Workflow) processEffect(p *Process, pe ProposedEffect) EffectResult {
 		}
 	}
 
-	handler, ok := w.Effects.GetHandler(pe.Tool)
-	if !ok {
+	_, hasLegacy := w.Effects.GetHandler(pe.Tool)
+	_, hasCtx := w.Effects.GetContextualHandler(pe.Tool)
+	if !hasLegacy && !hasCtx {
 		eff.State = EffectRejected
 		reason := fmt.Sprintf("no handler for tool: %s", pe.Tool)
 		w.Log.Append(Event{
@@ -337,9 +381,8 @@ func (w *Workflow) processEffect(p *Process, pe ProposedEffect) EffectResult {
 	eff.State = EffectStarted
 
 	start := time.Now()
-	handlerResult, err := handler(pe.Args)
+	handlerResult, _, err := w.invokeHandler(ctx, p, pe)
 	duration := time.Since(start)
-
 	if err != nil {
 		eff.State = EffectRejected
 		eff.Result = err.Error()

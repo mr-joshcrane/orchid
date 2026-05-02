@@ -586,3 +586,84 @@ func TestWorkflow_Run(t *testing.T) {
 		t.Fatalf("text = %q, want %q", text, "done")
 	}
 }
+
+func TestNewWorkflowOptions(t *testing.T) {
+	gen := GeneratorFunc(func(ctx Context) Proposal {
+		if len(ctx.ToolResults) > 0 {
+			return Proposal{Text: "done"}
+		}
+		return Proposal{
+			Text:    "reading",
+			Effects: []ProposedEffect{{Tool: "read", Args: map[string]string{"path": "/tmp"}}},
+		}
+	})
+
+	readTool := Tool{
+		Name:    "read",
+		Handler: func(args map[string]string) (string, error) { return "data", nil },
+	}
+
+	t.Run("WithTools option form", func(t *testing.T) {
+		wf := NewWorkflowWithOptions(gen, WithTools(readTool))
+		text, _, err := wf.Run(context.Background(), "test", "go")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if text != "done" {
+			t.Fatalf("text = %q, want %q", text, "done")
+		}
+	})
+
+	t.Run("legacy variadic form still works", func(t *testing.T) {
+		wf := NewWorkflow(gen, readTool)
+		text, _, err := wf.Run(context.Background(), "test", "go")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if text != "done" {
+			t.Fatalf("text = %q, want %q", text, "done")
+		}
+	})
+
+	t.Run("ContextualHandler dispatched via WithTools", func(t *testing.T) {
+		called := false
+		ctxTool := Tool{
+			Name: "ctxread",
+			ContextualHandler: func(hctx HandlerContext, args map[string]string) (string, error) {
+				called = true
+				if hctx.ProcessID == "" {
+					t.Error("ProcessID should be populated")
+				}
+				if hctx.LogAppend == nil {
+					t.Error("LogAppend should be populated")
+				}
+				return "ctx-data", nil
+			},
+		}
+		ctxGen := GeneratorFunc(func(ctx Context) Proposal {
+			if len(ctx.ToolResults) > 0 {
+				return Proposal{Text: "done"}
+			}
+			return Proposal{
+				Text:    "reading",
+				Effects: []ProposedEffect{{Tool: "ctxread", Args: map[string]string{}}},
+			}
+		})
+		wf := NewWorkflowWithOptions(ctxGen, WithTools(ctxTool))
+		p := wf.Spawn("test", "", []Capability{"ctxread"}, "")
+		wf.Inject(p.ID, "go")
+		wf.Step(context.Background(), p.ID)
+		if !called {
+			t.Fatal("ContextualHandler was not called")
+		}
+	})
+
+	t.Run("WithTools panics on misconfigured tool", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected panic for tool with no handler")
+			}
+		}()
+		NewWorkflowWithOptions(gen, WithTools(Tool{Name: "bad"}))
+	})
+}
