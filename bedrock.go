@@ -16,19 +16,36 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/mr-joshcrane/orchid/internal/overflow"
 )
 
 // BedrockGenerator implements Generator using the AWS Bedrock Converse API.
 type BedrockGenerator struct {
-	model  string
-	region string
-	creds  aws.CredentialsProvider
+	model          string
+	region         string
+	creds          aws.CredentialsProvider
+	retryConfig    *overflow.RetryConfig
+	overflowPolicy overflow.OverflowPolicy
+}
+
+type BedrockOption func(*BedrockGenerator)
+
+func BedrockWithRetry(attempts int, backoff overflow.BackoffFunc) BedrockOption {
+	return func(g *BedrockGenerator) {
+		g.retryConfig = &overflow.RetryConfig{Attempts: attempts, Backoff: backoff}
+	}
+}
+
+func BedrockWithOverflowPolicy(p overflow.OverflowPolicy) BedrockOption {
+	return func(g *BedrockGenerator) {
+		g.overflowPolicy = p
+	}
 }
 
 // NewBedrockGenerator creates a generator that calls Bedrock Converse.
 // Loads AWS credentials and region from the environment.
 // For ARN-style model IDs, the region is extracted from the ARN if not set.
-func NewBedrockGenerator(model string) (*BedrockGenerator, error) {
+func NewBedrockGenerator(model string, opts ...BedrockOption) (*BedrockGenerator, error) {
 	cfg, err := awsconfig.LoadDefaultConfig(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("loading aws config: %w", err)
@@ -40,14 +57,40 @@ func NewBedrockGenerator(model string) (*BedrockGenerator, error) {
 	if region == "" {
 		return nil, fmt.Errorf("no AWS region: set AWS_REGION or use an ARN-style model ID")
 	}
-	return &BedrockGenerator{
+	g := &BedrockGenerator{
 		model:  model,
 		region: region,
 		creds:  cfg.Credentials,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(g)
+	}
+	return g, nil
 }
 
 func (g *BedrockGenerator) Model() string { return g.model }
+
+func (g *BedrockGenerator) ModelLimit() int {
+	return lookupModelLimit(g.model)
+}
+
+func (g *BedrockGenerator) EstimateTokens(ctx Context) int {
+	return defaultEstimateTokens(ctx)
+}
+
+func (g *BedrockGenerator) MarshalHistory(h any) ([]byte, error) {
+	msgs, ok := h.([]bedrockMessage)
+	if !ok {
+		return json.Marshal(h)
+	}
+	return json.Marshal(msgs)
+}
+
+func (g *BedrockGenerator) UnmarshalHistory(b []byte) (any, error) {
+	var msgs []bedrockMessage
+	err := json.Unmarshal(b, &msgs)
+	return msgs, err
+}
 
 func (g *BedrockGenerator) Generate(ctx Context) Proposal {
 	var history []bedrockMessage
@@ -175,40 +218,48 @@ func (g *BedrockGenerator) buildTools(tools []ToolDefinition) []bedrockTool {
 }
 
 func (g *BedrockGenerator) call(ctx context.Context, payload []byte) ([]byte, error) {
-	endpoint := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s/converse", g.region, url.PathEscape(g.model))
+	doRequest := func() ([]byte, int, error) {
+		endpoint := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s/converse", g.region, url.PathEscape(g.model))
 
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
+		req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(payload))
+		if err != nil {
+			return nil, 0, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		hash := sha256.Sum256(payload)
+		payloadHash := hex.EncodeToString(hash[:])
+
+		creds, err := g.creds.Retrieve(ctx)
+		if err != nil {
+			return nil, 0, fmt.Errorf("retrieving credentials: %w", err)
+		}
+
+		signer := v4.NewSigner()
+		err = signer.SignHTTP(ctx, creds, req, payloadHash, "bedrock", g.region, time.Now())
+		if err != nil {
+			return nil, 0, fmt.Errorf("signing request: %w", err)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, 0, err
+		}
+		defer resp.Body.Close()
+
+		raw, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			return nil, resp.StatusCode, fmt.Errorf("bedrock returned %d: %s", resp.StatusCode, string(raw))
+		}
+
+		return raw, resp.StatusCode, nil
 	}
-	req.Header.Set("Content-Type", "application/json")
 
-	hash := sha256.Sum256(payload)
-	payloadHash := hex.EncodeToString(hash[:])
-
-	creds, err := g.creds.Retrieve(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("retrieving credentials: %w", err)
+	if g.retryConfig != nil {
+		return overflow.Retry(*g.retryConfig, doRequest)
 	}
-
-	signer := v4.NewSigner()
-	err = signer.SignHTTP(ctx, creds, req, payloadHash, "bedrock", g.region, time.Now())
-	if err != nil {
-		return nil, fmt.Errorf("signing request: %w", err)
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("bedrock returned %d: %s", resp.StatusCode, string(raw))
-	}
-
-	return raw, nil
+	data, _, err := doRequest()
+	return data, err
 }
 
 func (g *BedrockGenerator) parseResponse(raw []byte) Proposal {

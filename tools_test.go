@@ -179,7 +179,7 @@ func TestListToolByteCap(t *testing.T) {
 
 	t.Run("default cap limits output", func(t *testing.T) {
 		tool := ListTool(dir)
-		result, err := tool.Handler(map[string]string{})
+		result, _, err := callContextualHandler(t, tool, map[string]string{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -190,7 +190,7 @@ func TestListToolByteCap(t *testing.T) {
 
 	t.Run("small byte cap truncates entries", func(t *testing.T) {
 		tool := ListTool(dir, ListWithMaxBytes(100))
-		result, err := tool.Handler(map[string]string{})
+		result, _, err := callContextualHandler(t, tool, map[string]string{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -205,7 +205,7 @@ func TestListToolByteCap(t *testing.T) {
 
 	t.Run("entry cap limits count", func(t *testing.T) {
 		tool := ListTool(dir, ListWithMaxEntries(5))
-		result, err := tool.Handler(map[string]string{})
+		result, _, err := callContextualHandler(t, tool, map[string]string{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -226,7 +226,7 @@ func TestSearchToolByteCap(t *testing.T) {
 
 	t.Run("default cap limits output", func(t *testing.T) {
 		tool := SearchTool(dir)
-		result, err := tool.Handler(map[string]string{"pattern": "findme"})
+		result, _, err := callContextualHandler(t, tool, map[string]string{"pattern": "findme"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -237,7 +237,7 @@ func TestSearchToolByteCap(t *testing.T) {
 
 	t.Run("small byte cap truncates matches", func(t *testing.T) {
 		tool := SearchTool(dir, SearchWithMaxBytes(200))
-		result, err := tool.Handler(map[string]string{"pattern": "findme"})
+		result, _, err := callContextualHandler(t, tool, map[string]string{"pattern": "findme"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -248,7 +248,7 @@ func TestSearchToolByteCap(t *testing.T) {
 
 	t.Run("match cap limits count", func(t *testing.T) {
 		tool := SearchTool(dir, SearchWithMaxMatches(3))
-		result, err := tool.Handler(map[string]string{"pattern": "findme"})
+		result, _, err := callContextualHandler(t, tool, map[string]string{"pattern": "findme"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -300,5 +300,90 @@ func TestReadToolPathEscape(t *testing.T) {
 	_, _, err := callContextualHandler(t, tool, map[string]string{"path": "../../etc/passwd"})
 	if err == nil {
 		t.Fatal("expected error for path escape")
+	}
+}
+
+func TestWithRootDirRejectsNonExistent(t *testing.T) {
+	gen := GeneratorFunc(func(ctx Context) Proposal { return Proposal{Text: "done"} })
+	_, err := NewWorkflowWithOptions(gen, WithRootDir("/nonexistent/path/xyz"))
+	if err == nil {
+		t.Fatal("expected error for non-existent directory")
+	}
+}
+
+func TestWithRootDirResolvesAbsolute(t *testing.T) {
+	dir := t.TempDir()
+	gen := GeneratorFunc(func(ctx Context) Proposal { return Proposal{Text: "done"} })
+	wf, err := NewWorkflowWithOptions(gen, WithRootDir(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.rootDir == "" {
+		t.Fatal("rootDir should be set")
+	}
+	if wf.rootDir != dir {
+		t.Fatalf("rootDir = %q, want %q", wf.rootDir, dir)
+	}
+}
+
+func TestRootDirPropagatedToHandler(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "hello.txt", "world")
+
+	var gotRootDir string
+	tool := Tool{
+		Name: "check",
+		ContextualHandler: func(hctx HandlerContext, args map[string]string) (string, error) {
+			gotRootDir = hctx.RootDir
+			return "ok", nil
+		},
+	}
+
+	gen := GeneratorFunc(func(ctx Context) Proposal {
+		if len(ctx.ToolResults) > 0 {
+			return Proposal{Text: "done"}
+		}
+		return Proposal{
+			Text:    "checking",
+			Effects: []ProposedEffect{{Tool: "check", Args: map[string]string{}}},
+		}
+	})
+
+	wf, err := NewWorkflowWithOptions(gen, WithRootDir(dir), WithTools(tool))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf.Run(context.Background(), "test", "go")
+	if gotRootDir != dir {
+		t.Fatalf("RootDir in handler = %q, want %q", gotRootDir, dir)
+	}
+}
+
+func TestRootDirOverridesToolConstructorRoot(t *testing.T) {
+	constructorDir := t.TempDir()
+	workflowDir := t.TempDir()
+	writeTestFile(t, workflowDir, "fromworkflow.txt", "yes")
+
+	tool := ReadTool(constructorDir)
+	gen := GeneratorFunc(func(ctx Context) Proposal {
+		if len(ctx.ToolResults) > 0 {
+			return Proposal{Text: "done"}
+		}
+		return Proposal{
+			Text:    "reading",
+			Effects: []ProposedEffect{{Tool: "read", Args: map[string]string{"path": "fromworkflow.txt"}}},
+		}
+	})
+
+	wf, err := NewWorkflowWithOptions(gen, WithRootDir(workflowDir), WithTools(tool))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, _, runErr := wf.Run(context.Background(), "test", "go")
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	if text != "done" {
+		t.Fatalf("text = %q, want done (file should be found via workflow rootDir)", text)
 	}
 }

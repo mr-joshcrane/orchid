@@ -4,7 +4,10 @@
 /refactor-demo
 /hybrid-demo
 /test-refactor
+/summarise
+/generate
 
 # Generated output
 /refactored_tests/
 /integrated_tests/
+.sisyphus/

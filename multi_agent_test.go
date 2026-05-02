@@ -50,7 +50,10 @@ func TestWorkflow_Run_FileSearch(t *testing.T) {
 		},
 	}
 
-	wf := orchid.NewWorkflow(gen, readTool)
+	wf, err := orchid.NewWorkflow(gen, readTool)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	type result struct {
 		file  string
@@ -116,10 +119,13 @@ func (g *fileSearchGenerator) Generate(ctx orchid.Context) orchid.Proposal {
 func TestWorkflow_Run_StoreImplementation(t *testing.T) {
 	gen := &storeGenerator{}
 
-	wf := orchid.NewWorkflow(gen)
-	planText, _, err := wf.Run(context.Background(), "You design Go interfaces.", "design a key-value store")
+	wf, err := orchid.NewWorkflow(gen)
 	if err != nil {
 		t.Fatal(err)
+	}
+	planText, _, wfErr := wf.Run(context.Background(), "You design Go interfaces.", "design a key-value store")
+	if wfErr != nil {
+		t.Fatal(wfErr)
 	}
 
 	functions := strings.Split(planText, ",")
@@ -218,11 +224,14 @@ func TestWorkflow_Run_WithTools(t *testing.T) {
 		},
 	}
 
-	wf := orchid.NewWorkflow(gen, readTool)
-	text, _, err := wf.Run(context.Background(), "test", "read /tmp")
-
+	wf, err := orchid.NewWorkflow(gen, readTool)
 	if err != nil {
 		t.Fatal(err)
+	}
+	text, _, runErr := wf.Run(context.Background(), "test", "read /tmp")
+
+	if runErr != nil {
+		t.Fatal(runErr)
 	}
 	if !handlerCalled {
 		t.Fatal("handler was not called")
@@ -237,7 +246,10 @@ func TestBuildProcessTree_Structure(t *testing.T) {
 		return orchid.Proposal{Text: "echo: " + ctx.LastInput, InputTokens: 50, OutputTokens: 10}
 	})
 
-	wf := orchid.NewWorkflow(gen)
+	wf, err := orchid.NewWorkflow(gen)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	var wg sync.WaitGroup
 	tasks := []string{"task A", "task B", "task C"}
@@ -262,7 +274,10 @@ func TestPrintTree_Output(t *testing.T) {
 		return orchid.Proposal{Text: "ok", InputTokens: 100, OutputTokens: 20}
 	})
 
-	wf := orchid.NewWorkflow(gen)
+	wf, err := orchid.NewWorkflow(gen)
+	if err != nil {
+		t.Fatal(err)
+	}
 	wf.Run(context.Background(), "worker", "a")
 	wf.Run(context.Background(), "worker", "b")
 

@@ -1,5 +1,23 @@
 # Migration Guide
 
+## Phase 3 — NewWorkflow returns (*Workflow, error) (breaking)
+
+Both `NewWorkflow` and `NewWorkflowWithOptions` now return `(*Workflow, error)`. Check the error.
+
+```go
+// Before
+wf := orchid.NewWorkflow(gen, tools...)
+
+// After
+wf, err := orchid.NewWorkflow(gen, tools...)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+The current error cases:
+- `WithRootDir` with a non-existent directory
+
 ## Phase 2 — ReadTool default byte cap (breaking)
 
 `ReadTool` now caps output at 32KB by default. Previously it returned the entire file regardless of size.

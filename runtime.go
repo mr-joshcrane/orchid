@@ -2,24 +2,97 @@ package orchid
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 type Workflow struct {
-	Log        *EventLog
-	Processes  *ProcessTable
-	Effects    *EffectTable
-	gen        Generator
-	tools      []Tool
-	middleware []ToolMiddleware
-	running    atomic.Bool
-	idPrefix   string
-	nextPID    atomic.Uint64
+	Log          *EventLog
+	Processes    *ProcessTable
+	Effects      *EffectTable
+	gen          Generator
+	tools        []Tool
+	middleware   []ToolMiddleware
+	running      atomic.Bool
+	rootDir      string
+	logDir       string
+	logFile      *os.File
+	logTimestamp string
+	concurrency  int
+	configErr    error
+	permBundles  *permissionBundleRegistry
+	idPrefix     string
+	nextPID      atomic.Uint64
+}
+
+var ErrEffectFatal = errors.New("orchid: fatal effect error")
+
+func (w *Workflow) isParallelizable(toolName string) bool {
+	for i := range w.tools {
+		if w.tools[i].Name == toolName {
+			return w.tools[i].Parallelizable
+		}
+	}
+	return false
+}
+
+func (w *Workflow) dispatchParallel(ctx context.Context, p *Process, effects []ProposedEffect) ([]EffectResult, error) {
+	results := make([]EffectResult, len(effects))
+	var mu sync.Mutex
+	var fatalErr error
+
+	flushBatch := func(batch []int) error {
+		if len(batch) == 0 {
+			return nil
+		}
+		g, gctx := errgroup.WithContext(ctx)
+		g.SetLimit(w.concurrency)
+		for _, idx := range batch {
+			g.Go(func() error {
+				r, fatal := w.processEffect(gctx, p, effects[idx])
+				mu.Lock()
+				results[idx] = r
+				mu.Unlock()
+				return fatal
+			})
+		}
+		return g.Wait()
+	}
+
+	var batch []int
+	for i, pe := range effects {
+		if w.isParallelizable(pe.Tool) {
+			batch = append(batch, i)
+			continue
+		}
+		if err := flushBatch(batch); err != nil {
+			fatalErr = err
+			return results, fatalErr
+		}
+		batch = nil
+		r, fatal := w.processEffect(ctx, p, effects[i])
+		results[i] = r
+		if fatal != nil {
+			return results, fatal
+		}
+	}
+	if err := flushBatch(batch); err != nil {
+		fatalErr = err
+	}
+
+	return results, fatalErr
 }
 
 type WorkflowOption func(*Workflow)
@@ -35,31 +108,191 @@ func WithTools(tools ...Tool) WorkflowOption {
 	}
 }
 
-func NewWorkflow(gen Generator, tools ...Tool) *Workflow {
+func WithRootDir(dir string) WorkflowOption {
+	return func(w *Workflow) {
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			w.configErr = fmt.Errorf("orchid: WithRootDir: %w", err)
+			return
+		}
+		info, err := os.Stat(abs)
+		if err != nil {
+			w.configErr = fmt.Errorf("orchid: WithRootDir: %w", err)
+			return
+		}
+		if !info.IsDir() {
+			w.configErr = fmt.Errorf("orchid: WithRootDir: %s is not a directory", abs)
+			return
+		}
+		w.rootDir = abs
+	}
+}
+
+func WithLogDir(dir string) WorkflowOption {
+	return func(w *Workflow) {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			w.configErr = fmt.Errorf("orchid: WithLogDir: %w", err)
+			return
+		}
+		ts := time.Now().UTC().Format("20060102T150405Z")
+		path := filepath.Join(dir, ts+"-events.jsonl")
+		f, err := os.Create(path)
+		if err != nil {
+			w.configErr = fmt.Errorf("orchid: WithLogDir: %w", err)
+			return
+		}
+		w.logDir = dir
+		w.logFile = f
+		w.logTimestamp = ts
+		w.Log.SetSink(f)
+	}
+}
+
+func WithEffectConcurrency(n int) WorkflowOption {
+	return func(w *Workflow) {
+		w.concurrency = n
+	}
+}
+
+func NewWorkflow(gen Generator, tools ...Tool) (*Workflow, error) {
 	wf := &Workflow{
-		Log:       NewEventLog(),
-		Processes: NewProcessTable(),
-		Effects:   NewEffectTable(),
-		gen:       gen,
-		tools:     tools,
+		Log:         NewEventLog(),
+		Processes:   NewProcessTable(),
+		Effects:     NewEffectTable(),
+		gen:         gen,
+		tools:       tools,
+		permBundles: newPermissionBundleRegistry(),
 	}
 	for _, t := range tools {
 		wf.Effects.RegisterHandler(t.Name, t.Handler)
 	}
-	return wf
+	return wf, nil
 }
 
-func NewWorkflowWithOptions(gen Generator, opts ...WorkflowOption) *Workflow {
+func NewWorkflowWithOptions(gen Generator, opts ...WorkflowOption) (*Workflow, error) {
 	wf := &Workflow{
-		Log:       NewEventLog(),
-		Processes: NewProcessTable(),
-		Effects:   NewEffectTable(),
-		gen:       gen,
+		Log:         NewEventLog(),
+		Processes:   NewProcessTable(),
+		Effects:     NewEffectTable(),
+		gen:         gen,
+		permBundles: newPermissionBundleRegistry(),
 	}
 	for _, opt := range opts {
 		opt(wf)
 	}
-	return wf
+	if wf.configErr != nil {
+		return nil, wf.configErr
+	}
+	return wf, nil
+}
+
+func (w *Workflow) Close() error {
+	var errs []error
+	if w.logFile != nil {
+		errs = append(errs, w.logFile.Close())
+
+		events := w.Log.All()
+		auditPath := filepath.Join(w.logDir, w.logTimestamp+"-audit.txt")
+		if f, err := os.Create(auditPath); err == nil {
+			PrintLog(f, events)
+			errs = append(errs, f.Close())
+		} else {
+			errs = append(errs, err)
+		}
+
+		treePath := filepath.Join(w.logDir, w.logTimestamp+"-tree.txt")
+		if f, err := os.Create(treePath); err == nil {
+			PrintTree(f, BuildProcessTree(events))
+			errs = append(errs, f.Close())
+		} else {
+			errs = append(errs, err)
+		}
+
+		w.logFile = nil
+	}
+	return errors.Join(errs...)
+}
+
+type sessionData struct {
+	Events    []Event            `json:"events"`
+	Processes []sessionProcess   `json:"processes"`
+}
+
+type sessionProcess struct {
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	Purpose      string            `json:"purpose"`
+	State        ProcessState      `json:"state"`
+	ParentID     string            `json:"parent_id"`
+	History      json.RawMessage   `json:"history"`
+	Usage        TokenUsage        `json:"usage"`
+	Tools        []ToolDefinition  `json:"tools"`
+}
+
+func (w *Workflow) SaveSession(wr io.Writer) error {
+	data := sessionData{
+		Events: w.Log.All(),
+	}
+	for _, p := range w.Processes.All() {
+		sp := sessionProcess{
+			ID:       p.ID,
+			Name:     p.Name,
+			Purpose:  p.Purpose,
+			State:    p.State,
+			ParentID: p.ParentID,
+			Usage:    p.Usage,
+			Tools:    p.Tools,
+		}
+		if hs, ok := w.gen.(HistorySerializer); ok && p.History != nil {
+			histBytes, err := hs.MarshalHistory(p.History)
+			if err != nil {
+				return fmt.Errorf("marshaling history for process %s: %w", p.ID, err)
+			}
+			sp.History = histBytes
+		}
+		data.Processes = append(data.Processes, sp)
+	}
+	return json.NewEncoder(wr).Encode(data)
+}
+
+func (w *Workflow) LoadSession(r io.Reader) error {
+	var data sessionData
+	if err := json.NewDecoder(r).Decode(&data); err != nil {
+		return fmt.Errorf("decoding session: %w", err)
+	}
+	for _, e := range data.Events {
+		w.Log.Append(e)
+	}
+	for _, sp := range data.Processes {
+		p := &Process{
+			ID:           sp.ID,
+			Name:         sp.Name,
+			Purpose:      sp.Purpose,
+			State:        sp.State,
+			ParentID:     sp.ParentID,
+			Capabilities: make(map[Capability]bool),
+			Permissions:  make(map[Permission]bool),
+			Usage:        sp.Usage,
+			Tools:        sp.Tools,
+			View: LogView{
+				Source: w.Log,
+				Filter: func(e Event) bool { return e.ProcessID == sp.ID },
+			},
+		}
+		for _, td := range sp.Tools {
+			p.Capabilities[Capability(td.Name)] = true
+			p.Permissions[PermissionFromTool(ToolName(td.Name))] = true
+		}
+		if hs, ok := w.gen.(HistorySerializer); ok && sp.History != nil {
+			hist, err := hs.UnmarshalHistory(sp.History)
+			if err != nil {
+				return fmt.Errorf("unmarshaling history for process %s: %w", sp.ID, err)
+			}
+			p.History = hist
+		}
+		w.Processes.Add(p)
+	}
+	return nil
 }
 
 // Use appends workflow-global middleware applied to every tool at dispatch time.
@@ -69,6 +302,10 @@ func (w *Workflow) Use(mw ...ToolMiddleware) {
 		panic("orchid: Workflow.Use called after Run started")
 	}
 	w.middleware = append(w.middleware, mw...)
+}
+
+func (w *Workflow) RegisterPermissionBundle(p Permission, tools ...ToolName) {
+	w.permBundles.register(p, tools...)
 }
 
 func (w *Workflow) WithIDPrefix(prefix string) *Workflow {
@@ -98,6 +335,7 @@ func (w *Workflow) Spawn(name, purpose string, caps []Capability, parentID strin
 		Name:         name,
 		Purpose:      purpose,
 		Capabilities: make(map[Capability]bool),
+		Permissions:  make(map[Permission]bool),
 		View: LogView{
 			Source:   w.Log,
 			StartCut: uint64(w.Log.Len()),
@@ -107,6 +345,7 @@ func (w *Workflow) Spawn(name, purpose string, caps []Capability, parentID strin
 	}
 	for _, c := range caps {
 		p.Capabilities[c] = true
+		p.Permissions[PermissionFromTool(ToolName(c))] = true
 	}
 
 	w.Processes.Add(p)
@@ -147,6 +386,9 @@ func (w *Workflow) Step(ctx context.Context, processID string) (string, []Effect
 	if gen == nil {
 		gen = w.gen
 	}
+
+	w.emitPromptTelemetry(gen, orchidCtx, processID)
+
 	proposal := gen.Generate(orchidCtx)
 
 	if proposal.Err != nil {
@@ -177,15 +419,75 @@ func (w *Workflow) Step(ctx context.Context, processID string) (string, []Effect
 	})
 
 	var results []EffectResult
-	for _, pe := range proposal.Effects {
-		result := w.processEffect(ctx, p, pe)
-		results = append(results, result)
+	var fatalErr error
+	if w.concurrency <= 1 {
+		for _, pe := range proposal.Effects {
+			result, fatal := w.processEffect(ctx, p, pe)
+			results = append(results, result)
+			if fatal != nil {
+				fatalErr = fatal
+				break
+			}
+		}
+	} else {
+		results, fatalErr = w.dispatchParallel(ctx, p, proposal.Effects)
 	}
 
 	p.PendingResults = results
 
+	if fatalErr != nil {
+		p.State = ProcessFailed
+		p.Err = fatalErr
+		return proposal.Text, results, TokenUsage{InputTokens: proposal.InputTokens, OutputTokens: proposal.OutputTokens}
+	}
+
 	p.State = ProcessWaiting
 	return proposal.Text, results, TokenUsage{InputTokens: proposal.InputTokens, OutputTokens: proposal.OutputTokens}
+}
+
+func (w *Workflow) emitPromptTelemetry(gen Generator, orchidCtx Context, processID string) {
+	var est int
+	if te, ok := gen.(TokenEstimator); ok {
+		est = te.EstimateTokens(orchidCtx)
+	} else {
+		est = defaultEstimateTokens(orchidCtx)
+	}
+
+	var limit int
+	if ml, ok := gen.(ModelLimiter); ok {
+		limit = ml.ModelLimit()
+	} else if mi, ok := gen.(ModelIdentifier); ok {
+		limit = lookupModelLimit(mi.Model())
+	}
+
+	utilisation := 0
+	if limit > 0 {
+		utilisation = est * 100 / limit
+	}
+
+	w.Log.Append(Event{
+		Type:      EventPromptSize,
+		ProcessID: processID,
+		Data: map[string]string{
+			"estimated_tokens": strconv.Itoa(est),
+			"model_limit":     strconv.Itoa(limit),
+			"utilisation_pct":  strconv.Itoa(utilisation),
+		},
+	})
+
+	if limit > 0 && est > limit*95/100 {
+		w.Log.Append(Event{
+			Type:      EventPromptPressure,
+			ProcessID: processID,
+			Data:      map[string]string{"level": "critical", "utilisation_pct": strconv.Itoa(utilisation)},
+		})
+	} else if limit > 0 && est > limit*80/100 {
+		w.Log.Append(Event{
+			Type:      EventPromptPressure,
+			ProcessID: processID,
+			Data:      map[string]string{"level": "warn", "utilisation_pct": strconv.Itoa(utilisation)},
+		})
+	}
 }
 
 type StepCallback func(step int, text string, results []EffectResult) (inject string, stop bool)
@@ -284,6 +586,18 @@ func (w *Workflow) Run(ctx context.Context, purpose string, task string, opts ..
 	return w.StepUntilDone(ctx, p.ID, c, nil)
 }
 
+func MustRun(ctx context.Context, gen Generator, purpose, task string, opts ...WorkflowOption) (string, TokenUsage, error) {
+	wf, err := NewWorkflowWithOptions(gen, opts...)
+	if err != nil {
+		return "", TokenUsage{}, err
+	}
+	defer func() {
+		err = errors.Join(err, wf.Close())
+	}()
+	text, usage, runErr := wf.Run(ctx, purpose, task)
+	return text, usage, runErr
+}
+
 type EffectResult struct {
 	Tool      string
 	ToolUseID string
@@ -299,6 +613,7 @@ func (w *Workflow) invokeHandler(ctx context.Context, p *Process, pe ProposedEff
 			Ctx:       ctx,
 			ProcessID: p.ID,
 			ToolName:  pe.Tool,
+			RootDir:   w.rootDir,
 			LogAppend: func(e Event) { w.Log.Append(e) },
 		}
 		result, err := handler(hctx, pe.Args)
@@ -310,6 +625,7 @@ func (w *Workflow) invokeHandler(ctx context.Context, p *Process, pe ProposedEff
 			Ctx:       ctx,
 			ProcessID: p.ID,
 			ToolName:  pe.Tool,
+			RootDir:   w.rootDir,
 			LogAppend: func(e Event) { w.Log.Append(e) },
 		}
 		result, err := handler(hctx, pe.Args)
@@ -318,14 +634,17 @@ func (w *Workflow) invokeHandler(ctx context.Context, p *Process, pe ProposedEff
 	return "", false, nil
 }
 
-func (w *Workflow) processEffect(ctx context.Context, p *Process, pe ProposedEffect) EffectResult {
+func (w *Workflow) processEffect(ctx context.Context, p *Process, pe ProposedEffect) (EffectResult, error) {
 	cacheKey := effectCacheKey(pe)
+	p.cacheMu.Lock()
 	if p.EffectCache != nil {
 		if cached, ok := p.EffectCache[cacheKey]; ok {
 			cached.ToolUseID = pe.ToolUseID
-			return cached
+			p.cacheMu.Unlock()
+			return cached, nil
 		}
 	}
+	p.cacheMu.Unlock()
 
 	eff := &Effect{
 		ID:        w.newEffectID(),
@@ -343,15 +662,15 @@ func (w *Workflow) processEffect(ctx context.Context, p *Process, pe ProposedEff
 	eff.EventID = intentEventID
 	w.Effects.Track(eff)
 
-	if !p.HasCapability(Capability(pe.Tool)) {
+	if !w.hasToolPermission(p, ToolName(pe.Tool)) {
 		eff.State = EffectRejected
-		reason := fmt.Sprintf("process lacks capability: %s", pe.Tool)
+		reason := fmt.Sprintf("process lacks permission: tool:%s", pe.Tool)
 		w.Log.Append(Event{
 			Type:      EventEffectRejected,
 			ProcessID: p.ID,
 			Data:      map[string]string{"effect_id": eff.ID, "reason": reason},
 		})
-		return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: false, Error: reason}
+		return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: false, Error: reason}, nil
 	}
 
 	if ok, reason := w.Effects.CheckPolicies(p, eff); !ok {
@@ -361,7 +680,7 @@ func (w *Workflow) processEffect(ctx context.Context, p *Process, pe ProposedEff
 			ProcessID: p.ID,
 			Data:      map[string]string{"effect_id": eff.ID, "reason": reason},
 		})
-		return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: false, Error: reason}
+		return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: false, Error: reason}, nil
 	}
 
 	eff.State = EffectAdmitted
@@ -382,7 +701,7 @@ func (w *Workflow) processEffect(ctx context.Context, p *Process, pe ProposedEff
 				ProcessID: p.ID,
 				Data:      map[string]string{"effect_id": eff.ID, "reason": reason},
 			})
-			return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: true, Error: reason}
+			return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: true, Error: reason}, nil
 		}
 	}
 
@@ -396,7 +715,7 @@ func (w *Workflow) processEffect(ctx context.Context, p *Process, pe ProposedEff
 			ProcessID: p.ID,
 			Data:      map[string]string{"effect_id": eff.ID, "reason": reason},
 		})
-		return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: true, Error: reason}
+		return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: true, Error: reason}, nil
 	}
 
 	eff.State = EffectStarted
@@ -412,7 +731,11 @@ func (w *Workflow) processEffect(ctx context.Context, p *Process, pe ProposedEff
 			ProcessID: p.ID,
 			Data:      map[string]string{"effect_id": eff.ID, "reason": err.Error(), "duration_ms": strconv.FormatInt(duration.Milliseconds(), 10)},
 		})
-		return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: true, Error: err.Error()}
+		var fatal error
+		if errors.Is(err, ErrEffectFatal) {
+			fatal = ErrEffectFatal
+		}
+		return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: true, Error: err.Error()}, fatal
 	}
 
 	eff.State = EffectObserved
@@ -431,11 +754,34 @@ func (w *Workflow) processEffect(ctx context.Context, p *Process, pe ProposedEff
 	eff.State = EffectApplied
 
 	er := EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: true, Result: handlerResult}
+	p.cacheMu.Lock()
 	if p.EffectCache == nil {
 		p.EffectCache = make(map[string]EffectResult)
 	}
 	p.EffectCache[cacheKey] = er
-	return er
+	p.cacheMu.Unlock()
+	return er, nil
+}
+
+func (w *Workflow) hasToolPermission(p *Process, tool ToolName) bool {
+	toolPerm := PermissionFromTool(tool)
+	if p.HasPermission(toolPerm) {
+		return true
+	}
+	for perm := range p.Permissions {
+		if w.permBundles.expandsTo(perm, tool) {
+			return true
+		}
+	}
+	if p.HasCapability(Capability(tool)) {
+		w.Log.Append(Event{
+			Type:      EventPermissionFallback,
+			ProcessID: p.ID,
+			Data:      map[string]string{"tool": string(tool)},
+		})
+		return true
+	}
+	return false
 }
 
 func effectCacheKey(pe ProposedEffect) string {

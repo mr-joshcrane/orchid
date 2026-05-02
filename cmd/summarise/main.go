@@ -17,9 +17,13 @@ func main() {
 	}
 	root := os.Args[1]
 
-	wf := orchid.NewWorkflow(gen,
+	wf, err := orchid.NewWorkflow(gen,
 		orchid.SearchTool(root),
 	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "workflow: %v\n", err)
+		os.Exit(1)
+	}
 	wf.Log.SetSink(os.Stderr)
 
 	text, usage, err := wf.Run(context.Background(),

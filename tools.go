@@ -8,7 +8,26 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
+
+func effectiveRoot(hctx HandlerContext, constructorRoot string, toolName string, warned *sync.Once) string {
+	if hctx.RootDir == "" {
+		return constructorRoot
+	}
+	warned.Do(func() {
+		hctx.LogAppend(Event{
+			Type:      EventRootOverride,
+			ProcessID: hctx.ProcessID,
+			Data: map[string]string{
+				"tool":             toolName,
+				"constructor_root": constructorRoot,
+				"workflow_root":    hctx.RootDir,
+			},
+		})
+	})
+	return hctx.RootDir
+}
 
 func matchGlob(pattern, name string) bool {
 	if pattern == "" {
@@ -66,6 +85,7 @@ func ReadTool(root string, opts ...ReadOption) Tool {
 	}
 
 	absRoot, _ := filepath.Abs(root)
+	var rootWarned sync.Once
 
 	params := map[string]Param{
 		"path": {Type: "string", Description: "File path relative to project root", Required: true},
@@ -84,16 +104,19 @@ func ReadTool(root string, opts ...ReadOption) Tool {
 	}
 
 	return Tool{
-		Name:        "read",
-		Description: desc,
-		Params:      params,
+		Name:           "read",
+		Description:    desc,
+		Params:         params,
+		Parallelizable: true,
 		ContextualHandler: func(hctx HandlerContext, args map[string]string) (string, error) {
+			activeRoot := effectiveRoot(hctx, absRoot, "read", &rootWarned)
+
 			p := args["path"]
 			if p == "" {
 				return "", fmt.Errorf("path is required")
 			}
-			target, _ := filepath.Abs(filepath.Join(absRoot, filepath.Clean(p)))
-			if !strings.HasPrefix(target, absRoot) {
+			target, _ := filepath.Abs(filepath.Join(activeRoot, filepath.Clean(p)))
+			if !strings.HasPrefix(target, activeRoot) {
 				return "", fmt.Errorf("path escapes root")
 			}
 
@@ -198,6 +221,9 @@ func SearchTool(root string, opts ...SearchOption) Tool {
 		o(&cfg)
 	}
 
+	absRoot, _ := filepath.Abs(root)
+	var rootWarned sync.Once
+
 	desc := fmt.Sprintf("Search file contents under %s by regex pattern. Returns matching lines with file paths and line numbers.", root)
 	if cfg.maxBytes > 0 {
 		desc += fmt.Sprintf(" Returns up to %d bytes.", cfg.maxBytes)
@@ -205,13 +231,16 @@ func SearchTool(root string, opts ...SearchOption) Tool {
 	desc += fmt.Sprintf(" Maximum %d matches.", cfg.maxMatches)
 
 	return Tool{
-		Name:        "search",
-		Description: desc,
+		Name:           "search",
+		Description:    desc,
+		Parallelizable: true,
 		Params: map[string]Param{
 			"pattern": {Type: "string", Description: "Go regex pattern to search for", Required: true},
 			"include": {Type: "string", Description: "File glob filter, e.g. *.go", Required: false},
 		},
-		Handler: func(args map[string]string) (string, error) {
+		ContextualHandler: func(hctx HandlerContext, args map[string]string) (string, error) {
+			activeRoot := effectiveRoot(hctx, absRoot, "search", &rootWarned)
+
 			pattern := args["pattern"]
 			if pattern == "" {
 				return "", fmt.Errorf("pattern is required")
@@ -224,7 +253,7 @@ func SearchTool(root string, opts ...SearchOption) Tool {
 
 			var matches []string
 			var totalBytes int
-			filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			filepath.Walk(activeRoot, func(path string, info os.FileInfo, err error) error {
 				if err != nil || info.IsDir() {
 					if info != nil && info.IsDir() && strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
 						return filepath.SkipDir
@@ -240,7 +269,7 @@ func SearchTool(root string, opts ...SearchOption) Tool {
 				}
 				defer f.Close()
 
-				rel, _ := filepath.Rel(root, path)
+				rel, _ := filepath.Rel(activeRoot, path)
 				scanner := bufio.NewScanner(f)
 				lineNum := 0
 				for scanner.Scan() {
@@ -289,6 +318,9 @@ func ListTool(root string, opts ...ListOption) Tool {
 		o(&cfg)
 	}
 
+	absRoot, _ := filepath.Abs(root)
+	var rootWarned sync.Once
+
 	desc := fmt.Sprintf("List all files under %s recursively. Returns relative paths.", root)
 	if cfg.maxBytes > 0 {
 		desc += fmt.Sprintf(" Returns up to %d bytes.", cfg.maxBytes)
@@ -296,16 +328,19 @@ func ListTool(root string, opts ...ListOption) Tool {
 	desc += fmt.Sprintf(" Maximum %d entries.", cfg.maxEntries)
 
 	return Tool{
-		Name:        "list",
-		Description: desc,
+		Name:           "list",
+		Description:    desc,
+		Parallelizable: true,
 		Params: map[string]Param{
 			"include": {Type: "string", Description: "File glob filter, e.g. *.go", Required: false},
 		},
-		Handler: func(args map[string]string) (string, error) {
+		ContextualHandler: func(hctx HandlerContext, args map[string]string) (string, error) {
+			activeRoot := effectiveRoot(hctx, absRoot, "list", &rootWarned)
+
 			include := args["include"]
 			var files []string
 			var totalBytes int
-			filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			filepath.Walk(activeRoot, func(path string, info os.FileInfo, err error) error {
 				if err != nil {
 					return nil
 				}
@@ -318,7 +353,7 @@ func ListTool(root string, opts ...ListOption) Tool {
 				if include != "" && !matchGlob(include, info.Name()) {
 					return nil
 				}
-				rel, _ := filepath.Rel(root, path)
+				rel, _ := filepath.Rel(activeRoot, path)
 				if cfg.maxBytes > 0 && totalBytes+len(rel)+1 > cfg.maxBytes {
 					return filepath.SkipAll
 				}

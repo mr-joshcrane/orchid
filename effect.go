@@ -50,6 +50,15 @@ type HandlerContext struct {
 
 type ContextualEffectHandler func(hctx HandlerContext, args map[string]string) (string, error)
 
+type Result struct {
+	Content  string
+	MIME     string
+	Bytes    int
+	Metadata map[string]string
+}
+
+type RichEffectHandler func(hctx HandlerContext, args map[string]string) (Result, error)
+
 // EffectPolicy decides whether an effect should be admitted.
 type EffectPolicy func(process *Process, effect *Effect) (bool, string)
 
@@ -77,16 +86,31 @@ func (et *EffectTable) RegisterHandler(tool string, handler EffectHandler) {
 }
 
 func (et *EffectTable) RegisterTool(tool Tool) error {
-	if tool.Handler != nil && tool.ContextualHandler != nil {
-		return fmt.Errorf("orchid: tool %q has both Handler and ContextualHandler set; exactly one must be non-nil", tool.Name)
+	handlerCount := 0
+	if tool.Handler != nil {
+		handlerCount++
 	}
-	if tool.Handler == nil && tool.ContextualHandler == nil {
-		return fmt.Errorf("orchid: tool %q has neither Handler nor ContextualHandler set; exactly one must be non-nil", tool.Name)
+	if tool.ContextualHandler != nil {
+		handlerCount++
+	}
+	if tool.RichHandler != nil {
+		handlerCount++
+	}
+	if handlerCount > 1 {
+		return fmt.Errorf("orchid: tool %q has multiple handlers set; exactly one must be non-nil", tool.Name)
+	}
+	if handlerCount == 0 {
+		return fmt.Errorf("orchid: tool %q has no handler set; exactly one must be non-nil", tool.Name)
 	}
 	et.mu.Lock()
 	defer et.mu.Unlock()
-	handler := tool.ContextualHandler
-	if handler == nil {
+	var handler ContextualEffectHandler
+	switch {
+	case tool.RichHandler != nil:
+		handler = adaptRichHandler(tool.RichHandler)
+	case tool.ContextualHandler != nil:
+		handler = tool.ContextualHandler
+	default:
 		handler = adaptLegacyHandler(tool.Handler)
 	}
 	et.contextualHandlers[tool.Name] = handler

@@ -34,12 +34,15 @@ func TestWorkflow_Use_AppliesMiddleware(t *testing.T) {
 		Handler: func(args map[string]string) (string, error) { return "data", nil },
 	}
 
-	wf := NewWorkflowWithOptions(gen, WithTools(readTool))
-	wf.Use(mw("A"), mw("B"))
-
-	text, _, err := wf.Run(context.Background(), "test", "go")
+	wf, err := NewWorkflowWithOptions(gen, WithTools(readTool))
 	if err != nil {
 		t.Fatal(err)
+	}
+	wf.Use(mw("A"), mw("B"))
+
+	text, _, runErr := wf.Run(context.Background(), "test", "go")
+	if runErr != nil {
+		t.Fatal(runErr)
 	}
 	if text != "done" {
 		t.Fatalf("text = %q, want %q", text, "done")
@@ -57,7 +60,10 @@ func TestWorkflow_Use_PanicsAfterRun(t *testing.T) {
 		return Proposal{Text: "done"}
 	})
 
-	wf := NewWorkflowWithOptions(gen)
+	wf, err := NewWorkflowWithOptions(gen)
+	if err != nil {
+		t.Fatal(err)
+	}
 	wf.Run(context.Background(), "test", "go")
 
 	defer func() {
@@ -97,12 +103,15 @@ func TestTool_With_PerToolMiddleware(t *testing.T) {
 	}
 	readTool = readTool.With(mw("per-tool"))
 
-	wf := NewWorkflowWithOptions(gen, WithTools(readTool))
-	wf.Use(mw("global"))
-
-	text, _, err := wf.Run(context.Background(), "test", "go")
+	wf, err := NewWorkflowWithOptions(gen, WithTools(readTool))
 	if err != nil {
 		t.Fatal(err)
+	}
+	wf.Use(mw("global"))
+
+	text, _, runErr := wf.Run(context.Background(), "test", "go")
+	if runErr != nil {
+		t.Fatal(runErr)
 	}
 	if text != "done" {
 		t.Fatalf("text = %q, want %q", text, "done")
@@ -159,7 +168,10 @@ func TestWorkflow_Use_LegacyHandlerGetsMiddleware(t *testing.T) {
 		Handler: func(args map[string]string) (string, error) { return "data", nil },
 	}
 
-	wf := NewWorkflow(gen, readTool)
+	wf, err := NewWorkflow(gen, readTool)
+	if err != nil {
+		t.Fatal(err)
+	}
 	wf.Use(mw)
 	wf.Run(context.Background(), "test", "go")
 
@@ -192,7 +204,10 @@ func TestMiddleware_HandlerContext_ToolNamePopulated(t *testing.T) {
 		Handler: func(args map[string]string) (string, error) { return "data", nil },
 	}
 
-	wf := NewWorkflowWithOptions(gen, WithTools(readTool))
+	wf, err := NewWorkflowWithOptions(gen, WithTools(readTool))
+	if err != nil {
+		t.Fatal(err)
+	}
 	wf.Use(mw)
 	wf.Run(context.Background(), "test", "go")
 

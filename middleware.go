@@ -10,6 +10,33 @@ func adaptLegacyHandler(h EffectHandler) ContextualEffectHandler {
 	}
 }
 
+func adaptRichHandler(h RichEffectHandler) ContextualEffectHandler {
+	return func(hctx HandlerContext, args map[string]string) (string, error) {
+		result, err := h(hctx, args)
+		if err != nil {
+			return "", err
+		}
+		if len(result.Metadata) > 0 {
+			data := map[string]string{
+				"tool":    hctx.ToolName,
+				"content": result.Content,
+			}
+			for k, v := range result.Metadata {
+				data["meta."+k] = v
+			}
+			if result.MIME != "" {
+				data["mime"] = result.MIME
+			}
+			hctx.LogAppend(Event{
+				Type:      EventEffectObserved,
+				ProcessID: hctx.ProcessID,
+				Data:      data,
+			})
+		}
+		return result.Content, nil
+	}
+}
+
 func applyMiddleware(base ContextualEffectHandler, mws []ToolMiddleware) ContextualEffectHandler {
 	h := base
 	for i := len(mws) - 1; i >= 0; i-- {

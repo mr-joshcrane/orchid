@@ -25,6 +25,7 @@ type Process struct {
 	Purpose        string
 	Generator      Generator
 	Capabilities   map[Capability]bool
+	Permissions    map[Permission]bool
 	View           LogView
 	State          ProcessState
 	Err            error
@@ -33,11 +34,16 @@ type Process struct {
 	History        any
 	PendingResults []EffectResult
 	EffectCache    map[string]EffectResult
+	cacheMu        sync.Mutex
 	Usage          TokenUsage
 }
 
 func (p *Process) HasCapability(c Capability) bool {
 	return p.Capabilities[c]
+}
+
+func (p *Process) HasPermission(perm Permission) bool {
+	return p.Permissions[perm]
 }
 
 type ProcessTable struct {

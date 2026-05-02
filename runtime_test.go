@@ -15,7 +15,10 @@ func nopGenerator() Generator {
 }
 
 func TestWorkflow_Spawn(t *testing.T) {
-	wf := NewWorkflow(nopGenerator())
+	wf, err := NewWorkflow(nopGenerator())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	p := wf.Spawn("worker", "", []Capability{"read", "bash"}, "")
 
@@ -47,7 +50,10 @@ func TestWorkflow_Spawn(t *testing.T) {
 }
 
 func TestWorkflow_Spawn_ParentID(t *testing.T) {
-	wf := NewWorkflow(nopGenerator())
+	wf, err := NewWorkflow(nopGenerator())
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := wf.Spawn("child", "", nil, "parent_1")
 
 	if p.ParentID != "parent_1" {
@@ -56,7 +62,10 @@ func TestWorkflow_Spawn_ParentID(t *testing.T) {
 }
 
 func TestWorkflow_Inject(t *testing.T) {
-	wf := NewWorkflow(nopGenerator())
+	wf, err := NewWorkflow(nopGenerator())
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := wf.Spawn("test", "", nil, "")
 
 	wf.Inject(p.ID, "hello world")
@@ -77,7 +86,10 @@ func TestWorkflow_Step_NoEffects(t *testing.T) {
 	gen := GeneratorFunc(func(ctx Context) Proposal {
 		return Proposal{Text: "thinking"}
 	})
-	wf := NewWorkflow(gen)
+	wf, err := NewWorkflow(gen)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := wf.Spawn("thinker", "", nil, "")
 	wf.Inject(p.ID, "what?")
 
@@ -113,7 +125,10 @@ func TestWorkflow_Step_EffectAdmittedAndExecuted(t *testing.T) {
 		},
 	}
 
-	wf := NewWorkflow(gen, readTool)
+	wf, err := NewWorkflow(gen, readTool)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := wf.Spawn("reader", "", []Capability{"read"}, "")
 	wf.Inject(p.ID, "read it")
 
@@ -138,7 +153,10 @@ func TestWorkflow_Step_EffectRejectedByCapability(t *testing.T) {
 		}
 	})
 
-	wf := NewWorkflow(gen)
+	wf, err := NewWorkflow(gen)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := wf.Spawn("reader", "", []Capability{"read"}, "")
 	wf.Inject(p.ID, "go")
 
@@ -168,7 +186,10 @@ func TestWorkflow_Step_EffectRejectedByPolicy(t *testing.T) {
 		Handler: func(args map[string]string) (string, error) { return "data", nil },
 	}
 
-	wf := NewWorkflow(gen, readTool)
+	wf, err := NewWorkflow(gen, readTool)
+	if err != nil {
+		t.Fatal(err)
+	}
 	wf.Effects.AddPolicy(func(p *Process, e *Effect) (bool, string) {
 		return false, "policy says no"
 	})
@@ -194,7 +215,10 @@ func TestWorkflow_Step_NoHandler(t *testing.T) {
 		}
 	})
 
-	wf := NewWorkflow(gen)
+	wf, err := NewWorkflow(gen)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := wf.Spawn("test", "", []Capability{"unknown"}, "")
 	wf.Inject(p.ID, "go")
 
@@ -221,7 +245,10 @@ func TestWorkflow_Step_EffectEventsMinimal(t *testing.T) {
 		Handler: func(args map[string]string) (string, error) { return "data", nil },
 	}
 
-	wf := NewWorkflow(gen, readTool)
+	wf, err := NewWorkflow(gen, readTool)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := wf.Spawn("test", "", []Capability{"read"}, "")
 	wf.Inject(p.ID, "go")
 	wf.Step(context.Background(), p.ID)
@@ -249,7 +276,10 @@ func TestWorkflow_Step_EffectEventsMinimal(t *testing.T) {
 }
 
 func TestWorkflow_Step_MissingProcess(t *testing.T) {
-	wf := NewWorkflow(nopGenerator())
+	wf, err := NewWorkflow(nopGenerator())
+	if err != nil {
+		t.Fatal(err)
+	}
 	text, results, _ := wf.Step(context.Background(), "nonexistent")
 
 	if text != "" || results != nil {
@@ -276,7 +306,10 @@ func TestWorkflow_Step_SameEffectNotExecutedTwice(t *testing.T) {
 		},
 	}
 
-	wf := NewWorkflow(gen, bashTool)
+	wf, err := NewWorkflow(gen, bashTool)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := wf.Spawn("agent", "", []Capability{"bash"}, "")
 	wf.Inject(p.ID, "run rm -rf /tmp/test")
 
@@ -305,7 +338,10 @@ func TestWorkflow_StepUntilDone_MultiStep(t *testing.T) {
 		Handler: func(args map[string]string) (string, error) { return "data", nil },
 	}
 
-	wf := NewWorkflow(gen, readTool)
+	wf, err := NewWorkflow(gen, readTool)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := wf.Spawn("agent", "", []Capability{"read"}, "")
 	wf.Inject(p.ID, "go")
 
@@ -338,7 +374,10 @@ func TestWorkflow_StepUntilDone_MaxStepsCap(t *testing.T) {
 		Handler: func(args map[string]string) (string, error) { return "data", nil },
 	}
 
-	wf := NewWorkflow(gen, readTool)
+	wf, err := NewWorkflow(gen, readTool)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := wf.Spawn("agent", "", []Capability{"read"}, "")
 	wf.Inject(p.ID, "go")
 
@@ -367,7 +406,10 @@ func TestWorkflow_StepUntilDone_CallbackInjects(t *testing.T) {
 		Handler: func(args map[string]string) (string, error) { return "data", nil },
 	}
 
-	wf := NewWorkflow(gen, readTool)
+	wf, err := NewWorkflow(gen, readTool)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := wf.Spawn("agent", "", []Capability{"read"}, "")
 	wf.Inject(p.ID, "go")
 
@@ -397,7 +439,10 @@ func TestWorkflow_StepUntilDone_CallbackStops(t *testing.T) {
 		Handler: func(args map[string]string) (string, error) { return "data", nil },
 	}
 
-	wf := NewWorkflow(gen, readTool)
+	wf, err := NewWorkflow(gen, readTool)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := wf.Spawn("agent", "", []Capability{"read"}, "")
 	wf.Inject(p.ID, "go")
 
@@ -433,7 +478,10 @@ func TestWorkflow_StepUntilDone_NilCallback(t *testing.T) {
 		Handler: func(args map[string]string) (string, error) { return "data", nil },
 	}
 
-	wf := NewWorkflow(gen, readTool)
+	wf, err := NewWorkflow(gen, readTool)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := wf.Spawn("agent", "", []Capability{"read"}, "")
 	wf.Inject(p.ID, "go")
 
@@ -452,7 +500,10 @@ func TestEvent_AssistantOutput_ContainsTokens(t *testing.T) {
 		return Proposal{Text: "hello", InputTokens: 100, OutputTokens: 25}
 	})
 
-	wf := NewWorkflow(gen)
+	wf, err := NewWorkflow(gen)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := wf.Spawn("test", "", nil, "")
 	wf.Inject(p.ID, "go")
 	wf.Step(context.Background(), p.ID)
@@ -488,7 +539,10 @@ func TestEvent_EffectObserved_ContainsDuration(t *testing.T) {
 		},
 	}
 
-	wf := NewWorkflow(gen, readTool)
+	wf, err := NewWorkflow(gen, readTool)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := wf.Spawn("test", "", []Capability{"read"}, "")
 	wf.Inject(p.ID, "go")
 	wf.Step(context.Background(), p.ID)
@@ -514,7 +568,10 @@ func TestProcess_Usage_AccumulatesAcrossSteps(t *testing.T) {
 		return Proposal{Text: "ok", InputTokens: 100, OutputTokens: 20}
 	})
 
-	wf := NewWorkflow(gen)
+	wf, err := NewWorkflow(gen)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := wf.Spawn("test", "", nil, "")
 	wf.Inject(p.ID, "go")
 
@@ -535,7 +592,10 @@ func TestProcess_Usage_IndependentPerProcess(t *testing.T) {
 		return Proposal{Text: "ok", InputTokens: 50, OutputTokens: 10}
 	})
 
-	wf := NewWorkflow(gen)
+	wf, err := NewWorkflow(gen)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p1 := wf.Spawn("a", "", nil, "")
 	p2 := wf.Spawn("b", "", nil, "")
 
@@ -576,7 +636,10 @@ func TestWorkflow_Run(t *testing.T) {
 		},
 	}
 
-	wf := NewWorkflow(gen, readTool)
+	wf, err := NewWorkflow(gen, readTool)
+	if err != nil {
+		t.Fatal(err)
+	}
 	text, _, err := wf.Run(context.Background(), "test agent", "hello")
 
 	if err != nil {
@@ -604,10 +667,13 @@ func TestNewWorkflowOptions(t *testing.T) {
 	}
 
 	t.Run("WithTools option form", func(t *testing.T) {
-		wf := NewWorkflowWithOptions(gen, WithTools(readTool))
-		text, _, err := wf.Run(context.Background(), "test", "go")
+		wf, err := NewWorkflowWithOptions(gen, WithTools(readTool))
 		if err != nil {
 			t.Fatal(err)
+		}
+		text, _, runErr := wf.Run(context.Background(), "test", "go")
+		if runErr != nil {
+			t.Fatal(runErr)
 		}
 		if text != "done" {
 			t.Fatalf("text = %q, want %q", text, "done")
@@ -615,10 +681,13 @@ func TestNewWorkflowOptions(t *testing.T) {
 	})
 
 	t.Run("legacy variadic form still works", func(t *testing.T) {
-		wf := NewWorkflow(gen, readTool)
-		text, _, err := wf.Run(context.Background(), "test", "go")
+		wf, err := NewWorkflow(gen, readTool)
 		if err != nil {
 			t.Fatal(err)
+		}
+		text, _, runErr := wf.Run(context.Background(), "test", "go")
+		if runErr != nil {
+			t.Fatal(runErr)
 		}
 		if text != "done" {
 			t.Fatalf("text = %q, want %q", text, "done")
@@ -649,7 +718,10 @@ func TestNewWorkflowOptions(t *testing.T) {
 				Effects: []ProposedEffect{{Tool: "ctxread", Args: map[string]string{}}},
 			}
 		})
-		wf := NewWorkflowWithOptions(ctxGen, WithTools(ctxTool))
+		wf, err := NewWorkflowWithOptions(ctxGen, WithTools(ctxTool))
+		if err != nil {
+			t.Fatal(err)
+		}
 		p := wf.Spawn("test", "", []Capability{"ctxread"}, "")
 		wf.Inject(p.ID, "go")
 		wf.Step(context.Background(), p.ID)
@@ -664,6 +736,6 @@ func TestNewWorkflowOptions(t *testing.T) {
 				t.Fatal("expected panic for tool with no handler")
 			}
 		}()
-		NewWorkflowWithOptions(gen, WithTools(Tool{Name: "bad"}))
+		_, _ = NewWorkflowWithOptions(gen, WithTools(Tool{Name: "bad"}))
 	})
 }
