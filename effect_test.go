@@ -84,6 +84,40 @@ func TestEffectState_String(t *testing.T) {
 	}
 }
 
+func TestToolHandlerExclusive(t *testing.T) {
+	et := NewEffectTable()
+
+	both := Tool{
+		Name:              "both",
+		Handler:           func(args map[string]string) (string, error) { return "", nil },
+		ContextualHandler: func(hctx HandlerContext, args map[string]string) (string, error) { return "", nil },
+	}
+	if err := et.RegisterTool(both); err == nil {
+		t.Fatal("expected error when both Handler and ContextualHandler are set")
+	}
+
+	neither := Tool{Name: "neither"}
+	if err := et.RegisterTool(neither); err == nil {
+		t.Fatal("expected error when neither Handler nor ContextualHandler is set")
+	}
+
+	legacyOnly := Tool{
+		Name:    "legacy",
+		Handler: func(args map[string]string) (string, error) { return "ok", nil },
+	}
+	if err := et.RegisterTool(legacyOnly); err != nil {
+		t.Fatalf("unexpected error for legacy-only tool: %v", err)
+	}
+
+	contextualOnly := Tool{
+		Name:              "contextual",
+		ContextualHandler: func(hctx HandlerContext, args map[string]string) (string, error) { return "ok", nil },
+	}
+	if err := et.RegisterTool(contextualOnly); err != nil {
+		t.Fatalf("unexpected error for contextual-only tool: %v", err)
+	}
+}
+
 func TestEffectHandler_Error(t *testing.T) {
 	et := NewEffectTable()
 	et.RegisterHandler("fail", func(args map[string]string) (string, error) {

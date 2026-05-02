@@ -6,8 +6,28 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 )
+
+func effectiveRoot(hctx HandlerContext, constructorRoot string, toolName string, warned *sync.Once) string {
+	if hctx.RootDir == "" {
+		return constructorRoot
+	}
+	warned.Do(func() {
+		hctx.LogAppend(Event{
+			Type:      EventRootOverride,
+			ProcessID: hctx.ProcessID,
+			Data: map[string]string{
+				"tool":             toolName,
+				"constructor_root": constructorRoot,
+				"workflow_root":    hctx.RootDir,
+			},
+		})
+	})
+	return hctx.RootDir
+}
 
 func matchGlob(pattern, name string) bool {
 	if pattern == "" {
@@ -25,15 +45,202 @@ func matchGlob(pattern, name string) bool {
 	return false
 }
 
-func SearchTool(root string) Tool {
+type readConfig struct {
+	maxBytes      int
+	binaryDetect  bool
+	offsetSupport bool
+}
+
+type ReadOption func(*readConfig)
+
+func ReadWithMaxBytes(n int) ReadOption     { return func(c *readConfig) { c.maxBytes = n } }
+func ReadWithBinaryDetect(b bool) ReadOption { return func(c *readConfig) { c.binaryDetect = b } }
+func ReadWithOffsetSupport(b bool) ReadOption { return func(c *readConfig) { c.offsetSupport = b } }
+
+func isBinary(data []byte) bool {
+	sample := data
+	if len(sample) > 512 {
+		sample = sample[:512]
+	}
+	if len(sample) == 0 {
+		return false
+	}
+	nonPrintable := 0
+	for _, b := range sample {
+		if b < 0x20 && b != '\n' && b != '\r' && b != '\t' {
+			nonPrintable++
+		}
+	}
+	return float64(nonPrintable)/float64(len(sample)) > 0.3
+}
+
+func ReadTool(root string, opts ...ReadOption) Tool {
+	cfg := readConfig{
+		maxBytes:      32_000,
+		binaryDetect:  true,
+		offsetSupport: true,
+	}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	absRoot, _ := filepath.Abs(root)
+	var rootWarned sync.Once
+
+	params := map[string]Param{
+		"path": {Type: "string", Description: "File path relative to project root", Required: true},
+	}
+	if cfg.offsetSupport {
+		params["offset"] = Param{Type: "integer", Description: "Byte offset to start reading from (default 0)", Required: false}
+		params["length"] = Param{Type: "integer", Description: "Number of bytes to read (default max)", Required: false}
+	}
+
+	desc := fmt.Sprintf("Read a file from %s.", root)
+	if cfg.maxBytes > 0 {
+		desc += fmt.Sprintf(" Returns up to %d bytes.", cfg.maxBytes)
+		if cfg.offsetSupport {
+			desc += " For larger files use offset and length to paginate."
+		}
+	}
+
 	return Tool{
-		Name:        "search",
-		Description: "Search file contents by regex pattern. Returns matching lines with file paths and line numbers.",
+		Name:           "read",
+		Description:    desc,
+		Params:         params,
+		Parallelizable: true,
+		ContextualHandler: func(hctx HandlerContext, args map[string]string) (string, error) {
+			activeRoot := effectiveRoot(hctx, absRoot, "read", &rootWarned)
+
+			p := args["path"]
+			if p == "" {
+				return "", fmt.Errorf("path is required")
+			}
+			target, _ := filepath.Abs(filepath.Join(activeRoot, filepath.Clean(p)))
+			if !strings.HasPrefix(target, activeRoot) {
+				return "", fmt.Errorf("path escapes root")
+			}
+
+			info, err := os.Stat(target)
+			if err != nil {
+				return "", err
+			}
+
+			if info.IsDir() {
+				return readDir(target)
+			}
+
+			data, err := os.ReadFile(target)
+			if err != nil {
+				return "", err
+			}
+
+			if cfg.binaryDetect && isBinary(data) {
+				return "TOOL_REJECTED: binary file (use a binary-capable tool or request specific byte ranges)", nil
+			}
+
+			offset := 0
+			if v := args["offset"]; v != "" {
+				offset, err = strconv.Atoi(v)
+				if err != nil || offset < 0 {
+					return "", fmt.Errorf("offset must be a non-negative integer")
+				}
+			}
+			if offset > len(data) {
+				offset = len(data)
+			}
+			data = data[offset:]
+
+			length := cfg.maxBytes
+			if v := args["length"]; v != "" {
+				length, err = strconv.Atoi(v)
+				if err != nil || length < 0 {
+					return "", fmt.Errorf("length must be a non-negative integer")
+				}
+			}
+			if length == 0 {
+				length = len(data)
+			}
+
+			if cfg.maxBytes > 0 && length > cfg.maxBytes {
+				length = cfg.maxBytes
+			}
+
+			truncated := length < len(data)
+			if truncated {
+				total := len(data)
+				data = data[:length]
+				hctx.LogAppend(Event{
+					Type:      EventOutputTruncated,
+					ProcessID: hctx.ProcessID,
+					Data: map[string]string{
+						"tool":        "read",
+						"bytes_total": strconv.Itoa(total + offset),
+						"bytes_shown": strconv.Itoa(length),
+						"offset":      strconv.Itoa(offset),
+					},
+				})
+			}
+
+			return string(data), nil
+		},
+	}
+}
+
+func readDir(target string) (string, error) {
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		return "", err
+	}
+	var lines []string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() {
+			name += "/"
+		}
+		lines = append(lines, name)
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+type searchConfig struct {
+	maxBytes   int
+	maxMatches int
+}
+
+type SearchOption func(*searchConfig)
+
+func SearchWithMaxBytes(n int) SearchOption   { return func(c *searchConfig) { c.maxBytes = n } }
+func SearchWithMaxMatches(n int) SearchOption { return func(c *searchConfig) { c.maxMatches = n } }
+
+func SearchTool(root string, opts ...SearchOption) Tool {
+	cfg := searchConfig{
+		maxBytes:   16_000,
+		maxMatches: 200,
+	}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	absRoot, _ := filepath.Abs(root)
+	var rootWarned sync.Once
+
+	desc := fmt.Sprintf("Search file contents under %s by regex pattern. Returns matching lines with file paths and line numbers.", root)
+	if cfg.maxBytes > 0 {
+		desc += fmt.Sprintf(" Returns up to %d bytes.", cfg.maxBytes)
+	}
+	desc += fmt.Sprintf(" Maximum %d matches.", cfg.maxMatches)
+
+	return Tool{
+		Name:           "search",
+		Description:    desc,
+		Parallelizable: true,
 		Params: map[string]Param{
 			"pattern": {Type: "string", Description: "Go regex pattern to search for", Required: true},
 			"include": {Type: "string", Description: "File glob filter, e.g. *.go", Required: false},
 		},
-		Handler: func(args map[string]string) (string, error) {
+		ContextualHandler: func(hctx HandlerContext, args map[string]string) (string, error) {
+			activeRoot := effectiveRoot(hctx, absRoot, "search", &rootWarned)
+
 			pattern := args["pattern"]
 			if pattern == "" {
 				return "", fmt.Errorf("pattern is required")
@@ -45,17 +252,16 @@ func SearchTool(root string) Tool {
 			include := args["include"]
 
 			var matches []string
-			filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			var totalBytes int
+			filepath.Walk(activeRoot, func(path string, info os.FileInfo, err error) error {
 				if err != nil || info.IsDir() {
 					if info != nil && info.IsDir() && strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
 						return filepath.SkipDir
 					}
 					return nil
 				}
-				if include != "" {
-					if !matchGlob(include, info.Name()) {
-						return nil
-					}
+				if include != "" && !matchGlob(include, info.Name()) {
+					return nil
 				}
 				f, err := os.Open(path)
 				if err != nil {
@@ -63,17 +269,23 @@ func SearchTool(root string) Tool {
 				}
 				defer f.Close()
 
-				rel, _ := filepath.Rel(root, path)
+				rel, _ := filepath.Rel(activeRoot, path)
 				scanner := bufio.NewScanner(f)
 				lineNum := 0
 				for scanner.Scan() {
 					lineNum++
 					line := scanner.Text()
-					if re.MatchString(line) {
-						matches = append(matches, fmt.Sprintf("%s:%d: %s", rel, lineNum, line))
-						if len(matches) >= 200 {
-							return filepath.SkipAll
-						}
+					if !re.MatchString(line) {
+						continue
+					}
+					entry := fmt.Sprintf("%s:%d: %s", rel, lineNum, line)
+					if cfg.maxBytes > 0 && totalBytes+len(entry)+1 > cfg.maxBytes {
+						return filepath.SkipAll
+					}
+					matches = append(matches, entry)
+					totalBytes += len(entry) + 1
+					if len(matches) >= cfg.maxMatches {
+						return filepath.SkipAll
 					}
 				}
 				return nil
@@ -87,65 +299,48 @@ func SearchTool(root string) Tool {
 	}
 }
 
-func ReadTool(root string) Tool {
-	absRoot, _ := filepath.Abs(root)
-	return Tool{
-		Name:        "read",
-		Description: "Read the contents of a file. For directories, returns a listing.",
-		Params: map[string]Param{
-			"path": {Type: "string", Description: "File path relative to project root", Required: true},
-		},
-		Handler: func(args map[string]string) (string, error) {
-			p := args["path"]
-			if p == "" {
-				return "", fmt.Errorf("path is required")
-			}
-			target, _ := filepath.Abs(filepath.Join(absRoot, filepath.Clean(p)))
-			if !strings.HasPrefix(target, absRoot) {
-				return "", fmt.Errorf("path escapes root")
-			}
-
-			info, err := os.Stat(target)
-			if err != nil {
-				return "", err
-			}
-
-			if info.IsDir() {
-				entries, err := os.ReadDir(target)
-				if err != nil {
-					return "", err
-				}
-				var lines []string
-				for _, e := range entries {
-					name := e.Name()
-					if e.IsDir() {
-						name += "/"
-					}
-					lines = append(lines, name)
-				}
-				return strings.Join(lines, "\n"), nil
-			}
-
-			data, err := os.ReadFile(target)
-			if err != nil {
-				return "", err
-			}
-			return string(data), nil
-		},
-	}
+type listConfig struct {
+	maxBytes   int
+	maxEntries int
 }
 
-func ListTool(root string) Tool {
+type ListOption func(*listConfig)
+
+func ListWithMaxBytes(n int) ListOption   { return func(c *listConfig) { c.maxBytes = n } }
+func ListWithMaxEntries(n int) ListOption { return func(c *listConfig) { c.maxEntries = n } }
+
+func ListTool(root string, opts ...ListOption) Tool {
+	cfg := listConfig{
+		maxBytes:   8_000,
+		maxEntries: 1000,
+	}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	absRoot, _ := filepath.Abs(root)
+	var rootWarned sync.Once
+
+	desc := fmt.Sprintf("List all files under %s recursively. Returns relative paths.", root)
+	if cfg.maxBytes > 0 {
+		desc += fmt.Sprintf(" Returns up to %d bytes.", cfg.maxBytes)
+	}
+	desc += fmt.Sprintf(" Maximum %d entries.", cfg.maxEntries)
+
 	return Tool{
-		Name:        "list",
-		Description: "List all files in the project recursively. Returns relative paths.",
+		Name:           "list",
+		Description:    desc,
+		Parallelizable: true,
 		Params: map[string]Param{
 			"include": {Type: "string", Description: "File glob filter, e.g. *.go", Required: false},
 		},
-		Handler: func(args map[string]string) (string, error) {
+		ContextualHandler: func(hctx HandlerContext, args map[string]string) (string, error) {
+			activeRoot := effectiveRoot(hctx, absRoot, "list", &rootWarned)
+
 			include := args["include"]
 			var files []string
-			filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			var totalBytes int
+			filepath.Walk(activeRoot, func(path string, info os.FileInfo, err error) error {
 				if err != nil {
 					return nil
 				}
@@ -155,14 +350,16 @@ func ListTool(root string) Tool {
 					}
 					return nil
 				}
-				if include != "" {
-					if !matchGlob(include, info.Name()) {
-						return nil
-					}
+				if include != "" && !matchGlob(include, info.Name()) {
+					return nil
 				}
-				rel, _ := filepath.Rel(root, path)
+				rel, _ := filepath.Rel(activeRoot, path)
+				if cfg.maxBytes > 0 && totalBytes+len(rel)+1 > cfg.maxBytes {
+					return filepath.SkipAll
+				}
 				files = append(files, rel)
-				if len(files) >= 1000 {
+				totalBytes += len(rel) + 1
+				if len(files) >= cfg.maxEntries {
 					return filepath.SkipAll
 				}
 				return nil

@@ -63,10 +63,63 @@ type ModelIdentifier interface {
 	Model() string
 }
 
+type TokenEstimator interface {
+	EstimateTokens(ctx Context) int
+}
+
+type ModelLimiter interface {
+	ModelLimit() int
+}
+
+var modelLimits = map[string]int{
+	"anthropic.claude-3-5-sonnet-20241022-v2:0": 200000,
+	"anthropic.claude-3-5-haiku-20241022-v1:0":  200000,
+	"anthropic.claude-3-sonnet-20240229-v1:0":   200000,
+	"anthropic.claude-3-haiku-20240307-v1:0":    200000,
+	"anthropic.claude-v2":                       100000,
+	"gpt-4":                                     128000,
+	"gpt-4-turbo":                               128000,
+	"gpt-4o":                                    128000,
+	"gpt-3.5-turbo":                             16385,
+}
+
+func RegisterModelLimit(model string, limit int) {
+	modelLimits[model] = limit
+}
+
+func lookupModelLimit(model string) int {
+	if limit, ok := modelLimits[model]; ok {
+		return limit
+	}
+	for prefix, limit := range modelLimits {
+		if len(model) > len(prefix) && model[:len(prefix)] == prefix {
+			return limit
+		}
+	}
+	return 0
+}
+
+func defaultEstimateTokens(ctx Context) int {
+	var chars int
+	chars += len(ctx.Purpose)
+	chars += len(ctx.LastInput)
+	for _, e := range ctx.Events {
+		for _, v := range e.Data {
+			chars += len(v)
+		}
+	}
+	return chars / 4
+}
+
 type GeneratorFunc func(Context) Proposal
 
 func (f GeneratorFunc) Generate(ctx Context) Proposal {
 	return f(ctx)
+}
+
+type HistorySerializer interface {
+	MarshalHistory(h any) ([]byte, error)
+	UnmarshalHistory(b []byte) (any, error)
 }
 
 type promptTrace struct {

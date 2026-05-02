@@ -1,6 +1,7 @@
 package orchid
 
 import (
+	"context"
 	"fmt"
 	"sync"
 )
@@ -39,21 +40,42 @@ type Effect struct {
 // EffectHandler executes a specific tool type and returns the result.
 type EffectHandler func(args map[string]string) (string, error)
 
+type HandlerContext struct {
+	Ctx       context.Context
+	ProcessID string
+	ToolName  string
+	RootDir   string // populated in Phase 3 via WithRootDir; empty until then
+	LogAppend func(Event)
+}
+
+type ContextualEffectHandler func(hctx HandlerContext, args map[string]string) (string, error)
+
+type Result struct {
+	Content  string
+	MIME     string
+	Bytes    int
+	Metadata map[string]string
+}
+
+type RichEffectHandler func(hctx HandlerContext, args map[string]string) (Result, error)
+
 // EffectPolicy decides whether an effect should be admitted.
 type EffectPolicy func(process *Process, effect *Effect) (bool, string)
 
 // EffectTable manages the lifecycle of all effects.
 type EffectTable struct {
-	mu       sync.RWMutex
-	effects  map[string]*Effect
-	handlers map[string]EffectHandler
-	policies []EffectPolicy
+	mu                 sync.RWMutex
+	effects            map[string]*Effect
+	handlers           map[string]EffectHandler
+	contextualHandlers map[string]ContextualEffectHandler
+	policies           []EffectPolicy
 }
 
 func NewEffectTable() *EffectTable {
 	return &EffectTable{
-		effects:  make(map[string]*Effect),
-		handlers: make(map[string]EffectHandler),
+		effects:            make(map[string]*Effect),
+		handlers:           make(map[string]EffectHandler),
+		contextualHandlers: make(map[string]ContextualEffectHandler),
 	}
 }
 
@@ -61,6 +83,45 @@ func (et *EffectTable) RegisterHandler(tool string, handler EffectHandler) {
 	et.mu.Lock()
 	defer et.mu.Unlock()
 	et.handlers[tool] = handler
+}
+
+func (et *EffectTable) RegisterTool(tool Tool) error {
+	handlerCount := 0
+	if tool.Handler != nil {
+		handlerCount++
+	}
+	if tool.ContextualHandler != nil {
+		handlerCount++
+	}
+	if tool.RichHandler != nil {
+		handlerCount++
+	}
+	if handlerCount > 1 {
+		return fmt.Errorf("orchid: tool %q has multiple handlers set; exactly one must be non-nil", tool.Name)
+	}
+	if handlerCount == 0 {
+		return fmt.Errorf("orchid: tool %q has no handler set; exactly one must be non-nil", tool.Name)
+	}
+	et.mu.Lock()
+	defer et.mu.Unlock()
+	var handler ContextualEffectHandler
+	switch {
+	case tool.RichHandler != nil:
+		handler = adaptRichHandler(tool.RichHandler)
+	case tool.ContextualHandler != nil:
+		handler = tool.ContextualHandler
+	default:
+		handler = adaptLegacyHandler(tool.Handler)
+	}
+	et.contextualHandlers[tool.Name] = handler
+	return nil
+}
+
+func (et *EffectTable) GetContextualHandler(tool string) (ContextualEffectHandler, bool) {
+	et.mu.RLock()
+	defer et.mu.RUnlock()
+	h, ok := et.contextualHandlers[tool]
+	return h, ok
 }
 
 func (et *EffectTable) AddPolicy(policy EffectPolicy) {

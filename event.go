@@ -18,13 +18,21 @@ const (
 	EventEffectObserved
 	EventEffectRejected
 	EventProcessSpawned
+	EventOutputTruncated
+	EventRootOverride
+	EventPermissionFallback
+	EventPromptSize
+	EventPromptPressure
+	EventHistoryTruncated
 )
 
 func (t EventType) String() string {
 	names := []string{
 		"UserInput", "AssistantOutput",
 		"EffectIntent", "EffectObserved", "EffectRejected",
-		"ProcessSpawned",
+		"ProcessSpawned", "OutputTruncated", "RootOverride",
+		"PermissionFallback", "PromptSize", "PromptPressure",
+		"HistoryTruncated",
 	}
 	if int(t) < len(names) {
 		return names[t]

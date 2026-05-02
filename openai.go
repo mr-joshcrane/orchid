@@ -8,14 +8,65 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/mr-joshcrane/orchid/internal/overflow"
 )
 
 type OpenAIGenerator struct {
-	endpoint string
+	endpoint       string
+	model          string
+	retryConfig    *overflow.RetryConfig
+	overflowPolicy overflow.OverflowPolicy
 }
 
-func NewOpenAIGenerator(endpoint string) *OpenAIGenerator {
-	return &OpenAIGenerator{endpoint: endpoint}
+type OpenAIOption func(*OpenAIGenerator)
+
+func OpenAIWithModel(model string) OpenAIOption {
+	return func(g *OpenAIGenerator) { g.model = model }
+}
+
+func OpenAIWithRetry(attempts int, backoff overflow.BackoffFunc) OpenAIOption {
+	return func(g *OpenAIGenerator) {
+		g.retryConfig = &overflow.RetryConfig{Attempts: attempts, Backoff: backoff}
+	}
+}
+
+func OpenAIWithOverflowPolicy(p overflow.OverflowPolicy) OpenAIOption {
+	return func(g *OpenAIGenerator) {
+		g.overflowPolicy = p
+	}
+}
+
+func NewOpenAIGenerator(endpoint string, opts ...OpenAIOption) *OpenAIGenerator {
+	g := &OpenAIGenerator{endpoint: endpoint}
+	for _, opt := range opts {
+		opt(g)
+	}
+	return g
+}
+
+func (g *OpenAIGenerator) Model() string { return g.model }
+
+func (g *OpenAIGenerator) ModelLimit() int {
+	return lookupModelLimit(g.model)
+}
+
+func (g *OpenAIGenerator) EstimateTokens(ctx Context) int {
+	return defaultEstimateTokens(ctx)
+}
+
+func (g *OpenAIGenerator) MarshalHistory(h any) ([]byte, error) {
+	msgs, ok := h.([]openAIMessage)
+	if !ok {
+		return json.Marshal(h)
+	}
+	return json.Marshal(msgs)
+}
+
+func (g *OpenAIGenerator) UnmarshalHistory(b []byte) (any, error) {
+	var msgs []openAIMessage
+	err := json.Unmarshal(b, &msgs)
+	return msgs, err
 }
 
 type openAIMessage struct {
@@ -66,7 +117,7 @@ func (g *OpenAIGenerator) Generate(ctx Context) Proposal {
 	}
 
 	body := map[string]any{
-		"model":       "",
+		"model":       g.model,
 		"messages":    history,
 		"temperature": 0,
 	}
@@ -95,33 +146,41 @@ func (g *OpenAIGenerator) Generate(ctx Context) Proposal {
 }
 
 func (g *OpenAIGenerator) call(ctx Context, payload []byte) ([]byte, error) {
-	url := strings.TrimRight(g.endpoint, "/") + "/chat/completions"
+	doRequest := func() ([]byte, int, error) {
+		endpoint := strings.TrimRight(g.endpoint, "/") + "/chat/completions"
 
-	requestCtx := ctx.Ctx
-	if requestCtx == nil {
-		requestCtx = context.Background()
-	}
-	req, err := http.NewRequestWithContext(requestCtx, "POST", url, bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
+		requestCtx := ctx.Ctx
+		if requestCtx == nil {
+			requestCtx = context.Background()
+		}
+		req, err := http.NewRequestWithContext(requestCtx, "POST", endpoint, bytes.NewReader(payload))
+		if err != nil {
+			return nil, 0, err
+		}
+		req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, 0, err
+		}
+		defer resp.Body.Close()
 
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
+		raw, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, resp.StatusCode, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(raw))
+		}
+		return raw, resp.StatusCode, nil
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(raw))
+	if g.retryConfig != nil {
+		return overflow.Retry(*g.retryConfig, doRequest)
 	}
-	return raw, nil
+	data, _, err := doRequest()
+	return data, err
 }
 
 func (g *OpenAIGenerator) parseResponse(raw []byte) Proposal {
