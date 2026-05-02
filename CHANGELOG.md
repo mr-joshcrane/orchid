@@ -5,6 +5,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed (breaking) — Byte budgets on built-in tools (Phase 2)
+
+- `ReadTool` now caps output at 32KB by default. Use `ReadWithMaxBytes(0)` to disable.
+- `ReadTool` now uses `ContextualHandler` (was `Handler`). Existing call sites using `ReadTool(root)` are unaffected.
+- `ReadTool` rejects binary files by default. Use `ReadWithBinaryDetect(false)` to disable.
+- `ReadTool`, `ListTool`, `SearchTool` accept functional options as variadic second argument (backward-compatible).
+
+### Added — Byte budgets on built-in tools (Phase 2)
+
+- `ReadOption`, `ListOption`, `SearchOption` functional option types.
+- `ReadWithMaxBytes(n)`, `ReadWithBinaryDetect(b)`, `ReadWithOffsetSupport(b)` options for `ReadTool`.
+- `ListWithMaxBytes(n)`, `ListWithMaxEntries(n)` options for `ListTool`.
+- `SearchWithMaxBytes(n)`, `SearchWithMaxMatches(n)` options for `SearchTool`.
+- `ReadTool` native pagination via `offset` and `length` parameters.
+- Tool descriptions are generated dynamically from config, truthfully advertising limits.
+- `ReadTool` emits `EventOutputTruncated` when output is truncated by byte cap.
+
 ### Added — Tool middleware + orchidx subpackage (Phase 1)
 
 - `ToolMiddleware` func type for wrapping `ContextualEffectHandler`.
