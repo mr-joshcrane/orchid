@@ -18,13 +18,14 @@ const (
 	EventEffectObserved
 	EventEffectRejected
 	EventProcessSpawned
+	EventOutputTruncated
 )
 
 func (t EventType) String() string {
 	names := []string{
 		"UserInput", "AssistantOutput",
 		"EffectIntent", "EffectObserved", "EffectRejected",
-		"ProcessSpawned",
+		"ProcessSpawned", "OutputTruncated",
 	}
 	if int(t) < len(names) {
 		return names[t]

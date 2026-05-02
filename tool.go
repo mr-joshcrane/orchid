@@ -23,3 +23,15 @@ type Tool struct {
 	// Consumed in Phase 6 (WithEffectConcurrency).
 	Parallelizable bool
 }
+
+// With returns a copy of the tool with per-tool middleware folded into the handler.
+// Per-tool middleware runs inside workflow-global middleware.
+func (t Tool) With(mw ...ToolMiddleware) Tool {
+	base := t.ContextualHandler
+	if base == nil {
+		base = adaptLegacyHandler(t.Handler)
+	}
+	t.ContextualHandler = applyMiddleware(base, mw)
+	t.Handler = nil
+	return t
+}

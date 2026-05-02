@@ -11,13 +11,15 @@ import (
 )
 
 type Workflow struct {
-	Log       *EventLog
-	Processes *ProcessTable
-	Effects   *EffectTable
-	gen       Generator
-	tools     []Tool
-	idPrefix  string
-	nextPID   atomic.Uint64
+	Log        *EventLog
+	Processes  *ProcessTable
+	Effects    *EffectTable
+	gen        Generator
+	tools      []Tool
+	middleware []ToolMiddleware
+	running    atomic.Bool
+	idPrefix   string
+	nextPID    atomic.Uint64
 }
 
 type WorkflowOption func(*Workflow)
@@ -58,6 +60,15 @@ func NewWorkflowWithOptions(gen Generator, opts ...WorkflowOption) *Workflow {
 		opt(wf)
 	}
 	return wf
+}
+
+// Use appends workflow-global middleware applied to every tool at dispatch time.
+// Panics if called after Run has started.
+func (w *Workflow) Use(mw ...ToolMiddleware) {
+	if w.running.Load() {
+		panic("orchid: Workflow.Use called after Run started")
+	}
+	w.middleware = append(w.middleware, mw...)
 }
 
 func (w *Workflow) WithIDPrefix(prefix string) *Workflow {
@@ -246,6 +257,7 @@ func (w *Workflow) StepUntilDone(ctx context.Context, processID string, c Constr
 }
 
 func (w *Workflow) Run(ctx context.Context, purpose string, task string, opts ...RunOption) (string, TokenUsage, error) {
+	w.running.Store(true)
 	c := Constraints{}
 	for _, opt := range opts {
 		opt(&c)
@@ -282,16 +294,25 @@ type EffectResult struct {
 
 func (w *Workflow) invokeHandler(ctx context.Context, p *Process, pe ProposedEffect) (string, bool, error) {
 	if ch, ok := w.Effects.GetContextualHandler(pe.Tool); ok {
+		handler := applyMiddleware(ch, w.middleware)
 		hctx := HandlerContext{
 			Ctx:       ctx,
 			ProcessID: p.ID,
+			ToolName:  pe.Tool,
 			LogAppend: func(e Event) { w.Log.Append(e) },
 		}
-		result, err := ch(hctx, pe.Args)
+		result, err := handler(hctx, pe.Args)
 		return result, true, err
 	}
 	if h, ok := w.Effects.GetHandler(pe.Tool); ok {
-		result, err := h(pe.Args)
+		handler := applyMiddleware(adaptLegacyHandler(h), w.middleware)
+		hctx := HandlerContext{
+			Ctx:       ctx,
+			ProcessID: p.ID,
+			ToolName:  pe.Tool,
+			LogAppend: func(e Event) { w.Log.Append(e) },
+		}
+		result, err := handler(hctx, pe.Args)
 		return result, true, err
 	}
 	return "", false, nil

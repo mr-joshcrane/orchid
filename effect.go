@@ -43,6 +43,7 @@ type EffectHandler func(args map[string]string) (string, error)
 type HandlerContext struct {
 	Ctx       context.Context
 	ProcessID string
+	ToolName  string
 	RootDir   string // populated in Phase 3 via WithRootDir; empty until then
 	LogAppend func(Event)
 }
@@ -84,11 +85,11 @@ func (et *EffectTable) RegisterTool(tool Tool) error {
 	}
 	et.mu.Lock()
 	defer et.mu.Unlock()
-	if tool.Handler != nil {
-		et.handlers[tool.Name] = tool.Handler
-		return nil
+	handler := tool.ContextualHandler
+	if handler == nil {
+		handler = adaptLegacyHandler(tool.Handler)
 	}
-	et.contextualHandlers[tool.Name] = tool.ContextualHandler
+	et.contextualHandlers[tool.Name] = handler
 	return nil
 }
 

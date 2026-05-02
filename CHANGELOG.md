@@ -5,6 +5,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — Tool middleware + orchidx subpackage (Phase 1)
+
+- `ToolMiddleware` func type for wrapping `ContextualEffectHandler`.
+- `Workflow.Use(mw ...ToolMiddleware)` — workflow-global middleware applied to every tool at dispatch time. Panics if called after `Run` starts.
+- `Tool.With(mw ...ToolMiddleware) Tool` — per-tool middleware folded into the handler at construction time (runs inside global middleware).
+- `HandlerContext.ToolName` field — populated at dispatch time for middleware that needs to identify the tool.
+- `EventOutputTruncated` event type.
+- `orchidx` subpackage (`github.com/mr-joshcrane/orchid/orchidx`) with four middleware:
+  - `orchidx.CapOutput(maxBytes int)` — truncates output with machine-readable marker, emits `EventOutputTruncated`.
+  - `orchidx.Timeout(d time.Duration)` — wraps handler context with deadline, returns `TOOL_TIMEOUT` error on expiry.
+  - `orchidx.Redact(patterns ...*regexp.Regexp)` — replaces regex matches in output with `[REDACTED]`.
+  - `orchidx.Meter(sink MetricSink)` — records tool name, duration, bytes in/out, and error to a `MetricSink` interface.
+
 ### Added — internal: options API, handler context, parallelism flag (Phase 0)
 
 - `WorkflowOption` func type and `NewWorkflowWithOptions(gen, ...WorkflowOption)` constructor.
