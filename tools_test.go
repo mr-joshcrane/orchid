@@ -139,12 +139,12 @@ func TestReadToolBinaryRefusal(t *testing.T) {
 
 	t.Run("binary file rejected", func(t *testing.T) {
 		tool := ReadTool(dir)
-		result, _, err := callContextualHandler(t, tool, map[string]string{"path": "binary.dat"})
-		if err != nil {
-			t.Fatal(err)
+		_, _, err := callContextualHandler(t, tool, map[string]string{"path": "binary.dat"})
+		if err == nil {
+			t.Fatal("expected error for binary file")
 		}
-		if !strings.HasPrefix(result, "TOOL_REJECTED:") {
-			t.Fatalf("expected TOOL_REJECTED, got %q", result)
+		if !strings.Contains(err.Error(), "binary file detected") {
+			t.Fatalf("expected binary detection error, got: %v", err)
 		}
 	})
 

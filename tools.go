@@ -122,6 +122,12 @@ func ReadTool(root string, opts ...ReadOption) Tool {
 
 			info, err := os.Stat(target)
 			if err != nil {
+				if os.IsNotExist(err) {
+					suggestion := suggestPath(activeRoot, p)
+					if suggestion != "" {
+						return "", fmt.Errorf("%s does not exist. Did you mean: %s", p, suggestion)
+					}
+				}
 				return "", err
 			}
 
@@ -135,7 +141,7 @@ func ReadTool(root string, opts ...ReadOption) Tool {
 			}
 
 			if cfg.binaryDetect && isBinary(data) {
-				return "TOOL_REJECTED: binary file (use a binary-capable tool or request specific byte ranges)", nil
+				return "", fmt.Errorf("binary file detected — use a binary-capable tool or request specific byte ranges")
 			}
 
 			offset := 0
@@ -184,6 +190,25 @@ func ReadTool(root string, opts ...ReadOption) Tool {
 			return string(data), nil
 		},
 	}
+}
+
+func suggestPath(root, requestedPath string) string {
+	target := filepath.Base(requestedPath)
+	var matches []string
+	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		if info.Name() == target {
+			rel, _ := filepath.Rel(root, path)
+			matches = append(matches, rel)
+			if len(matches) >= 5 {
+				return filepath.SkipAll
+			}
+		}
+		return nil
+	})
+	return strings.Join(matches, ", ")
 }
 
 func readDir(target string) (string, error) {
