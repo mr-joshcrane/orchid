@@ -29,17 +29,6 @@ func effectiveRoot(hctx HandlerContext, constructorRoot string, toolName string,
 	return hctx.RootDir
 }
 
-// matchInclude matches a file against an include pattern. If the pattern
-// contains a path separator, it matches against the relative path (supporting
-// "dir/file.go" or "dir/*.go"). Otherwise it matches against the basename only
-// (supporting "*.go" or "file.go").
-func matchInclude(pattern, basename, relPath string) bool {
-	if strings.Contains(pattern, "/") {
-		return matchGlob(pattern, relPath)
-	}
-	return matchGlob(pattern, basename)
-}
-
 func matchGlob(pattern, name string) bool {
 	if pattern == "" {
 		return true
@@ -266,7 +255,7 @@ func SearchTool(root string, opts ...SearchOption) Tool {
 					return nil
 				}
 				rel, _ := filepath.Rel(activeRoot, path)
-				if include != "" && !matchInclude(include, info.Name(), rel) {
+				if include != "" && !matchGlob(include, info.Name()) {
 					return nil
 				}
 				f, err := os.Open(path)
