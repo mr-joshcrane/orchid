@@ -15,6 +15,7 @@ import (
 type OpenAIGenerator struct {
 	endpoint       string
 	model          string
+	bearerToken    string
 	retryConfig    *overflow.RetryConfig
 	overflowPolicy overflow.OverflowPolicy
 }
@@ -23,6 +24,10 @@ type OpenAIOption func(*OpenAIGenerator)
 
 func OpenAIWithModel(model string) OpenAIOption {
 	return func(g *OpenAIGenerator) { g.model = model }
+}
+
+func OpenAIWithBearerToken(token string) OpenAIOption {
+	return func(g *OpenAIGenerator) { g.bearerToken = token }
 }
 
 func OpenAIWithRetry(attempts int, backoff overflow.BackoffFunc) OpenAIOption {
@@ -158,6 +163,9 @@ func (g *OpenAIGenerator) call(ctx Context, payload []byte) ([]byte, error) {
 			return nil, 0, err
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if g.bearerToken != "" {
+			req.Header.Set("Authorization", "Bearer "+g.bearerToken)
+		}
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {

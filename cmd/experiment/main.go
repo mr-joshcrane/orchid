@@ -66,17 +66,24 @@ func cosine(a, b []float64) float64 {
 func embedQuery(query string) ([]float64, error) {
 	endpoint := os.Getenv("EMBED_ENDPOINT")
 	if endpoint == "" {
-		endpoint = "http://127.0.0.1:8081"
+		endpoint = "https://nixcariot.tail60ffe.ts.net/embeddings"
 	}
-	model := os.Getenv("EMBED_MODEL")
-	if model == "" {
-		model = "Qwen/Qwen3-Embedding-0.6B"
+	token := os.Getenv("GH_TOKEN")
+	if token == "" {
+		token = os.Getenv("GITHUB_TOKEN")
 	}
 	reqBody, _ := json.Marshal(map[string]interface{}{
-		"model": model,
 		"input": strings.ReplaceAll(query, "\n", " "),
 	})
-	resp, err := http.Post(endpoint+"/v1/embeddings", "application/json", bytes.NewReader(reqBody))
+	req, err := http.NewRequest("POST", endpoint+"/v1/embeddings", bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("embed request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("embed request: %w", err)
 	}
@@ -252,7 +259,15 @@ func main() {
 		baseTools = append(baseTools, orchid.WithTools(SemanticSearchTool(idx)))
 	}
 
-	gen := orchid.NewOpenAIGenerator("http://localhost:8080/v1")
+	llmEndpoint := os.Getenv("LLM_ENDPOINT")
+	if llmEndpoint == "" {
+		llmEndpoint = "https://nixcariot.tail60ffe.ts.net/llm/v1"
+	}
+	token := os.Getenv("GH_TOKEN")
+	if token == "" {
+		token = os.Getenv("GITHUB_TOKEN")
+	}
+	gen := orchid.NewOpenAIGenerator(llmEndpoint, orchid.OpenAIWithBearerToken(token))
 
 	wf, err := orchid.NewWorkflowWithOptions(gen, baseTools...)
 	if err != nil {
@@ -290,7 +305,7 @@ RULES:
 			context.Background(),
 			purpose,
 			q,
-			orchid.WithConstraints(orchid.Constraints{MaxSteps: 25}),
+			orchid.WithConstraints(orchid.Constraints{MaxSteps: 15}),
 		)
 		elapsed := time.Since(start)
 

@@ -49,7 +49,7 @@ func main() {
 	}
 	embedEndpoint := os.Getenv("EMBED_ENDPOINT")
 	if embedEndpoint == "" {
-		embedEndpoint = "http://127.0.0.1:8081"
+		embedEndpoint = "https://nixcariot.tail60ffe.ts.net/embeddings"
 	}
 
 	switch os.Args[1] {
@@ -388,7 +388,19 @@ const embedBatchSize = 32
 
 func embedBatch(endpoint string, texts []string) ([][]float64, error) {
 	body, _ := json.Marshal(map[string]any{"input": texts})
-	resp, err := http.Post(endpoint+"/v1/embeddings", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest("POST", endpoint+"/v1/embeddings", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	token := os.Getenv("GH_TOKEN")
+	if token == "" {
+		token = os.Getenv("GITHUB_TOKEN")
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

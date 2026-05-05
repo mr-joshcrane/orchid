@@ -7,7 +7,7 @@
 set -e
 
 CODEBASE="${1:-traefik}"
-ORCHID_DIR="/home/joshc/code/orchid"
+ORCHID_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 case "$CODEBASE" in
   traefik)
@@ -42,8 +42,8 @@ esac
 RESULTS_DIR="/tmp/experiment-results-${CODEBASE}"
 mkdir -p "$RESULTS_DIR"
 
-export EMBED_ENDPOINT="${EMBED_ENDPOINT:-http://127.0.0.1:8081}"
-export EMBED_MODEL="${EMBED_MODEL:-Qwen/Qwen3-Embedding-0.6B}"
+export EMBED_ENDPOINT="${EMBED_ENDPOINT:-https://nixcariot.tail60ffe.ts.net/embeddings}"
+export GH_TOKEN="${GH_TOKEN:-$(gh auth token)}"
 
 cd "$ORCHID_DIR"
 

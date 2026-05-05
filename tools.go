@@ -86,18 +86,18 @@ func ReadTool(root string, opts ...ReadOption) Tool {
 
 	absRoot, _ := filepath.Abs(root)
 	var rootWarned sync.Once
+	fullyRead := map[string]bool{}
 
 	params := map[string]Param{
 		"path": {Type: "string", Description: "File path relative to project root", Required: true},
 	}
 	if cfg.offsetSupport {
-		params["offset"] = Param{Type: "integer", Description: "Byte offset to start reading from (default 0)", Required: false}
-		params["length"] = Param{Type: "integer", Description: "Number of bytes to read (default max)", Required: false}
+		params["line_start"] = Param{Type: "integer", Description: "Line number to start reading from (1-indexed, default 1)", Required: false}
 	}
 
 	desc := fmt.Sprintf("Read a file from %s.", root)
 	if cfg.maxBytes > 0 {
-		desc += fmt.Sprintf(" Files larger than %d bytes require offset and length parameters.", cfg.maxBytes)
+		desc += fmt.Sprintf(" Returns up to %d bytes starting from line_start.", cfg.maxBytes)
 	}
 
 	return Tool{
@@ -135,11 +135,29 @@ func ReadTool(root string, opts ...ReadOption) Tool {
 				return "TOOL_REJECTED: binary file (use a binary-capable tool or request specific byte ranges)", nil
 			}
 
+			if fullyRead[target] {
+				return "TOOL_REJECTED: this file has already been read in full and is in your conversation history. Re-read the content above instead of calling this tool again.", nil
+			}
+
 			offset := 0
-			if v := args["offset"]; v != "" {
-				offset, err = strconv.Atoi(v)
-				if err != nil || offset < 0 {
-					return "", fmt.Errorf("offset must be a non-negative integer")
+			startLine := 1
+			if v := args["line_start"]; v != "" {
+				startLine, err = strconv.Atoi(v)
+				if err != nil || startLine < 1 {
+					return "", fmt.Errorf("line_start must be a positive integer")
+				}
+				line := 1
+				for i, b := range data {
+					if line == startLine {
+						offset = i
+						break
+					}
+					if b == '\n' {
+						line++
+					}
+				}
+				if line < startLine {
+					offset = len(data)
 				}
 			}
 			if offset > len(data) {
@@ -148,31 +166,87 @@ func ReadTool(root string, opts ...ReadOption) Tool {
 			data = data[offset:]
 
 			length := cfg.maxBytes
-			explicitRange := args["offset"] != "" || args["length"] != ""
+			if length == 0 || length > len(data) {
+				length = len(data)
+			}
+
+			if length < len(data) {
+				shownData := data[:length]
+				nextLine := startLine
+				for _, b := range shownData {
+					if b == '\n' {
+						nextLine++
+					}
+				}
+				hint := fmt.Sprintf("\n\n[FILE TRUNCATED: showing from line %d. To continue, call read with {\"path\": %q, \"line_start\": %d}]",
+					startLine, args["path"], nextLine)
+				return string(shownData) + hint, nil
+			}
+
+			if startLine == 1 {
+				fullyRead[target] = true
+			}
+
+			return string(data), nil
+		},
+	}
+}
+
+func ReadBytesTool(root string) Tool {
+	absRoot, _ := filepath.Abs(root)
+	var rootWarned sync.Once
+
+	return Tool{
+		Name:        "read_bytes",
+		Description: fmt.Sprintf("Read raw bytes from a file in %s. Use for files with very long or no lines (minified JS, JSON blobs) where line_start pagination does not work.", root),
+		Params: map[string]Param{
+			"path":   {Type: "string", Description: "File path relative to project root", Required: true},
+			"offset": {Type: "integer", Description: "Byte offset to start reading from (default 0)", Required: false},
+			"length": {Type: "integer", Description: "Number of bytes to read (default 32000)", Required: false},
+		},
+		Parallelizable: true,
+		ContextualHandler: func(hctx HandlerContext, args map[string]string) (string, error) {
+			activeRoot := effectiveRoot(hctx, absRoot, "read_bytes", &rootWarned)
+
+			p := args["path"]
+			if p == "" {
+				return "", fmt.Errorf("path is required")
+			}
+			target, _ := filepath.Abs(filepath.Join(activeRoot, filepath.Clean(p)))
+			if !strings.HasPrefix(target, activeRoot) {
+				return "", fmt.Errorf("path escapes root")
+			}
+
+			data, err := os.ReadFile(target)
+			if err != nil {
+				return "", err
+			}
+
+			offset := 0
+			if v := args["offset"]; v != "" {
+				offset, err = strconv.Atoi(v)
+				if err != nil || offset < 0 {
+					return "", fmt.Errorf("offset must be a non-negative integer")
+				}
+			}
+			if offset > len(data) {
+				return "", nil
+			}
+			data = data[offset:]
+
+			length := 32_000
 			if v := args["length"]; v != "" {
 				length, err = strconv.Atoi(v)
 				if err != nil || length < 0 {
 					return "", fmt.Errorf("length must be a non-negative integer")
 				}
 			}
-			if length == 0 {
-				length = len(data)
-			}
-
-			if cfg.maxBytes > 0 && length > cfg.maxBytes {
-				length = cfg.maxBytes
-			}
-
-			if !explicitRange && length < len(data) {
-				total := len(data) + offset
-				data = data[:length]
-				hint := fmt.Sprintf("\n\n[FILE TRUNCATED: showing bytes 0-%d of %d total. To read more, call read with {\"path\": %q, \"offset\": %d, \"length\": %d}]",
-					length, total, args["path"], length, length)
-				return string(data) + hint, nil
-			}
 
 			if length < len(data) {
 				data = data[:length]
+				hint := fmt.Sprintf("\n\n[TRUNCATED: showing bytes %d-%d. To continue, call read_bytes with {\"path\": %q, \"offset\": %d}]",
+					offset, offset+length, args["path"], offset+length)
+				return string(data) + hint, nil
 			}
 
 			return string(data), nil

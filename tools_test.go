@@ -2,6 +2,7 @@ package orchid
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,46 +34,40 @@ func callContextualHandler(t *testing.T, tool Tool, args map[string]string) (str
 
 func TestReadToolPagination(t *testing.T) {
 	dir := t.TempDir()
-	content := strings.Repeat("ABCDEFGHIJ", 10)
+	var lines []string
+	for i := 1; i <= 100; i++ {
+		lines = append(lines, fmt.Sprintf("line %d content", i))
+	}
+	content := strings.Join(lines, "\n") + "\n"
 	writeTestFile(t, dir, "big.txt", content)
 
-	tool := ReadTool(dir, ReadWithMaxBytes(100), ReadWithBinaryDetect(false))
+	tool := ReadTool(dir, ReadWithMaxBytes(5000), ReadWithBinaryDetect(false))
 
 	t.Run("full file within limit", func(t *testing.T) {
-		result, events, err := callContextualHandler(t, tool, map[string]string{"path": "big.txt"})
+		small := strings.Join(lines[:10], "\n") + "\n"
+		writeTestFile(t, dir, "small.txt", small)
+		smallTool := ReadTool(dir, ReadWithMaxBytes(5000), ReadWithBinaryDetect(false))
+		result, _, err := callContextualHandler(t, smallTool, map[string]string{"path": "small.txt"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != content {
+		if result != small {
 			t.Fatalf("expected full content, got %d bytes", len(result))
 		}
-		if len(events) != 0 {
-			t.Fatalf("expected no truncation events, got %d", len(events))
-		}
 	})
 
-	t.Run("offset reads from position", func(t *testing.T) {
-		result, _, err := callContextualHandler(t, tool, map[string]string{"path": "big.txt", "offset": "90"})
+	t.Run("line_start reads from line", func(t *testing.T) {
+		result, _, err := callContextualHandler(t, tool, map[string]string{"path": "big.txt", "line_start": "50"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != "ABCDEFGHIJ" {
-			t.Fatalf("result = %q, want last 10 bytes", result)
-		}
-	})
-
-	t.Run("offset + length", func(t *testing.T) {
-		result, _, err := callContextualHandler(t, tool, map[string]string{"path": "big.txt", "offset": "10", "length": "10"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result != "ABCDEFGHIJ" {
-			t.Fatalf("result = %q, want 10 bytes from offset 10", result)
+		if !strings.HasPrefix(result, "line 50 content\n") {
+			t.Fatalf("expected to start at line 50, got: %s", result[:40])
 		}
 	})
 
 	t.Run("oversized file returns first page with hint", func(t *testing.T) {
-		small := ReadTool(dir, ReadWithMaxBytes(20), ReadWithBinaryDetect(false))
+		small := ReadTool(dir, ReadWithMaxBytes(200), ReadWithBinaryDetect(false))
 		result, _, err := callContextualHandler(t, small, map[string]string{"path": "big.txt"})
 		if err != nil {
 			t.Fatal(err)
@@ -80,32 +75,25 @@ func TestReadToolPagination(t *testing.T) {
 		if !strings.Contains(result, "[FILE TRUNCATED:") {
 			t.Fatalf("expected truncation hint, got: %s", result)
 		}
-		if !strings.Contains(result, `"offset": 20`) {
-			t.Fatalf("expected offset hint, got: %s", result)
+		if !strings.Contains(result, "line_start") {
+			t.Fatalf("expected line_start hint, got: %s", result)
 		}
 	})
 
-	t.Run("negative offset rejected", func(t *testing.T) {
-		_, _, err := callContextualHandler(t, tool, map[string]string{"path": "big.txt", "offset": "-1"})
+	t.Run("negative line_start rejected", func(t *testing.T) {
+		_, _, err := callContextualHandler(t, tool, map[string]string{"path": "big.txt", "line_start": "-1"})
 		if err == nil {
-			t.Fatal("expected error for negative offset")
+			t.Fatal("expected error for negative line_start")
 		}
 	})
 
-	t.Run("negative length rejected", func(t *testing.T) {
-		_, _, err := callContextualHandler(t, tool, map[string]string{"path": "big.txt", "length": "-5"})
-		if err == nil {
-			t.Fatal("expected error for negative length")
-		}
-	})
-
-	t.Run("offset beyond file returns empty", func(t *testing.T) {
-		result, _, err := callContextualHandler(t, tool, map[string]string{"path": "big.txt", "offset": "9999"})
+	t.Run("line_start beyond file returns empty", func(t *testing.T) {
+		result, _, err := callContextualHandler(t, tool, map[string]string{"path": "big.txt", "line_start": "9999"})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if result != "" {
-			t.Fatalf("expected empty result for offset beyond file, got %q", result)
+			t.Fatalf("expected empty result for line_start beyond file, got %q", result)
 		}
 	})
 
@@ -261,8 +249,8 @@ func TestReadToolDescription(t *testing.T) {
 	if !strings.Contains(tool.Description, "32000") {
 		t.Fatalf("default description should mention 32000 bytes, got: %s", tool.Description)
 	}
-	if !strings.Contains(tool.Description, "offset and length") {
-		t.Fatalf("default description should mention offset and length, got: %s", tool.Description)
+	if !strings.Contains(tool.Description, "line_start") {
+		t.Fatalf("default description should mention line_start, got: %s", tool.Description)
 	}
 
 	custom := ReadTool("/tmp/test", ReadWithMaxBytes(1000))
