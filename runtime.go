@@ -35,6 +35,7 @@ type Workflow struct {
 	permBundles  *permissionBundleRegistry
 	idPrefix     string
 	nextPID      atomic.Uint64
+	sqliteSink   *SQLiteSink
 }
 
 var ErrEffectFatal = errors.New("orchid: fatal effect error")
@@ -148,6 +149,24 @@ func WithLogDir(dir string) WorkflowOption {
 	}
 }
 
+// WithSQLiteLog configures a SQLite event sink at the given path. The database
+// file is created if it does not exist. When using together with WithLogDir,
+// call WithLogDir first so that the parent directory exists.
+//
+// Requires building with -tags sqlite; without the tag the option returns an
+// error from NewWorkflowWithOptions.
+func WithSQLiteLog(path string) WorkflowOption {
+	return func(w *Workflow) {
+		s, err := newSQLiteSink(path)
+		if err != nil {
+			w.configErr = fmt.Errorf("orchid: WithSQLiteLog(%q): %w", path, err)
+			return
+		}
+		w.sqliteSink = s
+		w.Log.AddSink(s)
+	}
+}
+
 func WithEffectConcurrency(n int) WorkflowOption {
 	return func(w *Workflow) {
 		w.concurrency = n
@@ -210,23 +229,27 @@ func (w *Workflow) Close() error {
 
 		w.logFile = nil
 	}
+	if w.sqliteSink != nil {
+		errs = append(errs, w.sqliteSink.Close())
+		w.sqliteSink = nil
+	}
 	return errors.Join(errs...)
 }
 
 type sessionData struct {
-	Events    []Event            `json:"events"`
-	Processes []sessionProcess   `json:"processes"`
+	Events    []Event          `json:"events"`
+	Processes []sessionProcess `json:"processes"`
 }
 
 type sessionProcess struct {
-	ID           string            `json:"id"`
-	Name         string            `json:"name"`
-	Purpose      string            `json:"purpose"`
-	State        ProcessState      `json:"state"`
-	ParentID     string            `json:"parent_id"`
-	History      json.RawMessage   `json:"history"`
-	Usage        TokenUsage        `json:"usage"`
-	Tools        []ToolDefinition  `json:"tools"`
+	ID       string           `json:"id"`
+	Name     string           `json:"name"`
+	Purpose  string           `json:"purpose"`
+	State    ProcessState     `json:"state"`
+	ParentID string           `json:"parent_id"`
+	History  json.RawMessage  `json:"history"`
+	Usage    TokenUsage       `json:"usage"`
+	Tools    []ToolDefinition `json:"tools"`
 }
 
 func (w *Workflow) SaveSession(wr io.Writer) error {
@@ -470,7 +493,7 @@ func (w *Workflow) emitPromptTelemetry(gen Generator, orchidCtx Context, process
 		ProcessID: processID,
 		Data: map[string]string{
 			"estimated_tokens": strconv.Itoa(est),
-			"model_limit":     strconv.Itoa(limit),
+			"model_limit":      strconv.Itoa(limit),
 			"utilisation_pct":  strconv.Itoa(utilisation),
 		},
 	})

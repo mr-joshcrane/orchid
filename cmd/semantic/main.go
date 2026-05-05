@@ -11,7 +11,6 @@ import (
 	"math"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -50,7 +49,7 @@ func main() {
 	}
 	embedEndpoint := os.Getenv("EMBED_ENDPOINT")
 	if embedEndpoint == "" {
-		embedEndpoint = "http://127.0.0.1:8090"
+		embedEndpoint = "http://127.0.0.1:8081"
 	}
 
 	switch os.Args[1] {
@@ -94,18 +93,8 @@ func main() {
 
 		fmt.Fprintf(os.Stderr, "parsed %d chunks\n", len(chunks))
 
-		embBin := os.Getenv("LLAMA_EMBEDDING")
-		if embBin == "" {
-			embBin = "llama-embedding"
-		}
-		embModel := os.Getenv("EMBED_MODEL")
-		if embModel == "" {
-			fatal("set EMBED_MODEL to the path of the embedding GGUF model")
-		}
-
-		// Process in batches to avoid OOM
-		const batchSize = 500
-		const sep = "<#SEP#>"
+		// Process in batches using the HTTP embedding endpoint
+		const batchSize = 32
 
 		for batchStart := 0; batchStart < len(chunks); batchStart += batchSize {
 			batchEnd := batchStart + batchSize
@@ -115,66 +104,21 @@ func main() {
 			batch := chunks[batchStart:batchEnd]
 			fmt.Fprintf(os.Stderr, "embedding batch %d-%d of %d...\n", batchStart, batchEnd-1, len(chunks))
 
-			// Write prompts file for this batch
-			promptFile, err := os.CreateTemp("", "semantic-prompts-*.txt")
-			if err != nil {
-				fatal("create temp file: %v", err)
-			}
-			var buf bytes.Buffer
+			texts := make([]string, len(batch))
 			for i, c := range batch {
-				if i > 0 {
-					buf.WriteString(sep)
-				}
-				buf.WriteString(c.Source)
+				texts[i] = c.Source
 			}
-			promptFile.Write(buf.Bytes())
-			promptFile.Close()
-			buf.Reset()
 
-			// Run llama-embedding
-			cmd := exec.Command(embBin,
-				"-m", embModel,
-				"--pooling", "last",
-				"-c", "4096",
-				"-ngl", "99",
-				"--embd-output-format", "json",
-				"--embd-separator", sep,
-				"-f", promptFile.Name(),
-				"--no-warmup",
-			)
-			cmd.Env = append(os.Environ(), "LD_LIBRARY_PATH=/run/opengl-driver/lib:"+os.Getenv("LD_LIBRARY_PATH"))
-			cmd.Stderr = os.Stderr
-			out, err := cmd.Output()
-			os.Remove(promptFile.Name())
+			embeddings, err := embedBatch(embedEndpoint, texts)
 			if err != nil {
-				fatal("llama-embedding: %v", err)
+				fatal("embed batch: %v", err)
 			}
-
-			// Parse embeddings
-			var embResp struct {
-				Data []struct {
-					Index     int       `json:"index"`
-					Embedding []float64 `json:"embedding"`
-				} `json:"data"`
-			}
-			if err := json.Unmarshal(out, &embResp); err != nil {
-				fatal("parse embedding output: %v", err)
-			}
-			if len(embResp.Data) < len(batch) {
-				fatal("expected %d embeddings, got %d", len(batch), len(embResp.Data))
-			}
-			if len(embResp.Data) > len(batch) {
-				embResp.Data = embResp.Data[:len(batch)]
-			}
-			sort.Slice(embResp.Data, func(i, j int) bool {
-				return embResp.Data[i].Index < embResp.Data[j].Index
-			})
-			for i, d := range embResp.Data {
-				chunks[batchStart+i].Embedding = d.Embedding
+			for i, emb := range embeddings {
+				chunks[batchStart+i].Embedding = emb
 			}
 		}
 
-		idx := Index{Endpoint: "llama-embedding", Chunks: chunks}
+		idx := Index{Endpoint: embedEndpoint, Chunks: chunks}
 		f, err := os.Create("index.json")
 		if err != nil {
 			fatal("create index.json: %v", err)
@@ -197,7 +141,7 @@ func main() {
 			fatal("load index: %v", err)
 		}
 
-		qEmb, err := embedCLI(query)
+		qEmb, err := embed(embedEndpoint, query)
 		if err != nil {
 			fatal("embed query: %v", err)
 		}
@@ -438,44 +382,6 @@ func embed(endpoint, text string) ([]float64, error) {
 		return nil, err
 	}
 	return results[0], nil
-}
-
-// embedCLI embeds a single text using the llama-embedding CLI tool.
-func embedCLI(text string) ([]float64, error) {
-	embBin := os.Getenv("LLAMA_EMBEDDING")
-	if embBin == "" {
-		embBin = "llama-embedding"
-	}
-	embModel := os.Getenv("EMBED_MODEL")
-	if embModel == "" {
-		return nil, fmt.Errorf("set EMBED_MODEL to the path of the embedding GGUF model")
-	}
-	cmd := exec.Command(embBin,
-		"-m", embModel,
-		"--pooling", "last",
-		"-c", "4096",
-		"-ngl", "99",
-		"--embd-output-format", "json",
-		"-p", strings.ReplaceAll(text, "\n", "\t"),
-		"--no-warmup",
-	)
-	cmd.Env = append(os.Environ(), "LD_LIBRARY_PATH=/run/opengl-driver/lib:"+os.Getenv("LD_LIBRARY_PATH"))
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("llama-embedding: %w", err)
-	}
-	var resp struct {
-		Data []struct {
-			Embedding []float64 `json:"embedding"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(out, &resp); err != nil {
-		return nil, err
-	}
-	if len(resp.Data) == 0 {
-		return nil, fmt.Errorf("no embedding returned")
-	}
-	return resp.Data[0].Embedding, nil
 }
 
 const embedBatchSize = 32
