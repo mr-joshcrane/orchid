@@ -53,8 +53,8 @@ type readConfig struct {
 
 type ReadOption func(*readConfig)
 
-func ReadWithMaxBytes(n int) ReadOption     { return func(c *readConfig) { c.maxBytes = n } }
-func ReadWithBinaryDetect(b bool) ReadOption { return func(c *readConfig) { c.binaryDetect = b } }
+func ReadWithMaxBytes(n int) ReadOption       { return func(c *readConfig) { c.maxBytes = n } }
+func ReadWithBinaryDetect(b bool) ReadOption  { return func(c *readConfig) { c.binaryDetect = b } }
 func ReadWithOffsetSupport(b bool) ReadOption { return func(c *readConfig) { c.offsetSupport = b } }
 
 func isBinary(data []byte) bool {
@@ -97,10 +97,7 @@ func ReadTool(root string, opts ...ReadOption) Tool {
 
 	desc := fmt.Sprintf("Read a file from %s.", root)
 	if cfg.maxBytes > 0 {
-		desc += fmt.Sprintf(" Returns up to %d bytes.", cfg.maxBytes)
-		if cfg.offsetSupport {
-			desc += " For larger files use offset and length to paginate."
-		}
+		desc += fmt.Sprintf(" Files larger than %d bytes require offset and length parameters.", cfg.maxBytes)
 	}
 
 	return Tool{
@@ -151,6 +148,7 @@ func ReadTool(root string, opts ...ReadOption) Tool {
 			data = data[offset:]
 
 			length := cfg.maxBytes
+			explicitRange := args["offset"] != "" || args["length"] != ""
 			if v := args["length"]; v != "" {
 				length, err = strconv.Atoi(v)
 				if err != nil || length < 0 {
@@ -165,20 +163,16 @@ func ReadTool(root string, opts ...ReadOption) Tool {
 				length = cfg.maxBytes
 			}
 
-			truncated := length < len(data)
-			if truncated {
-				total := len(data)
+			if !explicitRange && length < len(data) {
+				total := len(data) + offset
 				data = data[:length]
-				hctx.LogAppend(Event{
-					Type:      EventOutputTruncated,
-					ProcessID: hctx.ProcessID,
-					Data: map[string]string{
-						"tool":        "read",
-						"bytes_total": strconv.Itoa(total + offset),
-						"bytes_shown": strconv.Itoa(length),
-						"offset":      strconv.Itoa(offset),
-					},
-				})
+				hint := fmt.Sprintf("\n\n[FILE TRUNCATED: showing bytes 0-%d of %d total. To read more, call read with {\"path\": %q, \"offset\": %d, \"length\": %d}]",
+					length, total, args["path"], length, length)
+				return string(data) + hint, nil
+			}
+
+			if length < len(data) {
+				data = data[:length]
 			}
 
 			return string(data), nil
@@ -260,6 +254,7 @@ func SearchTool(root string, opts ...SearchOption) Tool {
 					}
 					return nil
 				}
+				rel, _ := filepath.Rel(activeRoot, path)
 				if include != "" && !matchGlob(include, info.Name()) {
 					return nil
 				}
@@ -268,8 +263,6 @@ func SearchTool(root string, opts ...SearchOption) Tool {
 					return nil
 				}
 				defer f.Close()
-
-				rel, _ := filepath.Rel(activeRoot, path)
 				scanner := bufio.NewScanner(f)
 				lineNum := 0
 				for scanner.Scan() {

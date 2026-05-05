@@ -71,20 +71,17 @@ func TestReadToolPagination(t *testing.T) {
 		}
 	})
 
-	t.Run("truncation emits event", func(t *testing.T) {
+	t.Run("oversized file returns first page with hint", func(t *testing.T) {
 		small := ReadTool(dir, ReadWithMaxBytes(20), ReadWithBinaryDetect(false))
-		result, events, err := callContextualHandler(t, small, map[string]string{"path": "big.txt"})
+		result, _, err := callContextualHandler(t, small, map[string]string{"path": "big.txt"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(result) != 20 {
-			t.Fatalf("result length = %d, want 20", len(result))
+		if !strings.Contains(result, "[FILE TRUNCATED:") {
+			t.Fatalf("expected truncation hint, got: %s", result)
 		}
-		if len(events) != 1 {
-			t.Fatalf("expected 1 truncation event, got %d", len(events))
-		}
-		if events[0].Type != EventOutputTruncated {
-			t.Fatalf("event type = %v, want EventOutputTruncated", events[0].Type)
+		if !strings.Contains(result, `"offset": 20`) {
+			t.Fatalf("expected offset hint, got: %s", result)
 		}
 	})
 
@@ -264,8 +261,8 @@ func TestReadToolDescription(t *testing.T) {
 	if !strings.Contains(tool.Description, "32000") {
 		t.Fatalf("default description should mention 32000 bytes, got: %s", tool.Description)
 	}
-	if !strings.Contains(tool.Description, "paginate") {
-		t.Fatalf("default description should mention pagination, got: %s", tool.Description)
+	if !strings.Contains(tool.Description, "offset and length") {
+		t.Fatalf("default description should mention offset and length, got: %s", tool.Description)
 	}
 
 	custom := ReadTool("/tmp/test", ReadWithMaxBytes(1000))

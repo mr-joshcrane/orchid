@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestEventLog_Append_AssignsSequentialIDs(t *testing.T) {
@@ -184,5 +185,141 @@ func TestEventLog_WriteTo_ProducesValidJSONL(t *testing.T) {
 	}
 	if record.Data["input_tokens"] != "100" {
 		t.Fatalf("input_tokens = %q", record.Data["input_tokens"])
+	}
+}
+
+// recordingSink records events for test assertions.
+type recordingSink struct {
+	mu     sync.Mutex
+	events []Event
+}
+
+func (s *recordingSink) Append(e Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, e)
+}
+
+func (s *recordingSink) Close() error { return nil }
+
+func (s *recordingSink) all() []Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Event, len(s.events))
+	copy(out, s.events)
+	return out
+}
+
+func TestEventLog_AddSink_FansOutInOrder(t *testing.T) {
+	log := NewEventLog()
+	s1 := &recordingSink{}
+	s2 := &recordingSink{}
+	log.AddSink(s1)
+	log.AddSink(s2)
+
+	log.Append(Event{Type: EventUserInput, ProcessID: "p1"})
+
+	e1 := s1.all()
+	e2 := s2.all()
+	if len(e1) != 1 || len(e2) != 1 {
+		t.Fatalf("sink1=%d, sink2=%d, want 1 each", len(e1), len(e2))
+	}
+	if e1[0].ID != e2[0].ID {
+		t.Fatalf("sinks received different IDs: %d vs %d", e1[0].ID, e2[0].ID)
+	}
+}
+
+func TestEventLog_SetSink_ReplacesOnlyWriterSink(t *testing.T) {
+	log := NewEventLog()
+	custom := &recordingSink{}
+	log.AddSink(custom)
+
+	var buf1, buf2 bytes.Buffer
+	log.SetSink(&buf1)
+	log.SetSink(&buf2) // replaces buf1
+
+	log.Append(Event{Type: EventUserInput, ProcessID: "p1", Data: map[string]string{"content": "hello"}})
+
+	// custom sink should have received the event
+	if len(custom.all()) != 1 {
+		t.Fatalf("custom sink got %d events, want 1", len(custom.all()))
+	}
+	// buf1 should be empty (replaced)
+	if buf1.Len() != 0 {
+		t.Fatalf("buf1 should be empty after replacement, got %d bytes", buf1.Len())
+	}
+	// buf2 should have the event
+	if buf2.Len() == 0 {
+		t.Fatal("buf2 should have the event")
+	}
+}
+
+func TestEventLog_SetSink_Nil_RemovesWriter(t *testing.T) {
+	log := NewEventLog()
+	custom := &recordingSink{}
+	log.AddSink(custom)
+
+	var buf bytes.Buffer
+	log.SetSink(&buf)
+	log.SetSink(nil) // remove writer
+
+	log.Append(Event{Type: EventUserInput, ProcessID: "p1"})
+
+	// writer should not have received anything
+	if buf.Len() != 0 {
+		t.Fatalf("buf should be empty after SetSink(nil), got %d bytes", buf.Len())
+	}
+	// custom sink should still work
+	if len(custom.all()) != 1 {
+		t.Fatalf("custom sink got %d events, want 1", len(custom.all()))
+	}
+}
+
+func TestEventLog_Append_DoesNotHoldLockDuringSinkWrite(t *testing.T) {
+	log := NewEventLog()
+
+	// This sink calls log.Len() during Append. If the lock is held, this deadlocks.
+	reentrant := &reentrantSink{log: log}
+	log.AddSink(reentrant)
+
+	done := make(chan struct{})
+	go func() {
+		log.Append(Event{Type: EventUserInput, ProcessID: "p1"})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// success
+	case <-time.After(2 * time.Second):
+		t.Fatal("Append deadlocked — lock held during sink write")
+	}
+
+	if reentrant.lenResult < 0 {
+		t.Fatal("reentrant sink was not called")
+	}
+}
+
+type reentrantSink struct {
+	log       *EventLog
+	lenResult int
+}
+
+func (s *reentrantSink) Append(e Event) {
+	s.lenResult = s.log.Len()
+}
+
+func (s *reentrantSink) Close() error { return nil }
+
+func TestWithSQLiteLog_Stub_ReturnsError(t *testing.T) {
+	if sqliteAvailable() {
+		t.Skip("sqlite build tag is active; stub test not applicable")
+	}
+	gen := GeneratorFunc(func(ctx Context) Proposal {
+		return Proposal{Text: "done"}
+	})
+	_, err := NewWorkflowWithOptions(gen, WithSQLiteLog(t.TempDir()+"/test.db"))
+	if err == nil {
+		t.Fatal("WithSQLiteLog without sqlite build tag should return error")
 	}
 }

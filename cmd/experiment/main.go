@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
+	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -62,40 +64,39 @@ func cosine(a, b []float64) float64 {
 }
 
 func embedQuery(query string) ([]float64, error) {
-	embBin := os.Getenv("LLAMA_EMBEDDING")
-	if embBin == "" {
-		return nil, fmt.Errorf("LLAMA_EMBEDDING not set")
+	endpoint := os.Getenv("EMBED_ENDPOINT")
+	if endpoint == "" {
+		endpoint = "http://127.0.0.1:8081"
 	}
-	embModel := os.Getenv("EMBED_MODEL")
-	if embModel == "" {
-		return nil, fmt.Errorf("EMBED_MODEL not set")
+	model := os.Getenv("EMBED_MODEL")
+	if model == "" {
+		model = "Qwen/Qwen3-Embedding-0.6B"
 	}
-	cmd := exec.Command(embBin,
-		"-m", embModel,
-		"--pooling", "last",
-		"-c", "4096",
-		"-ngl", "99",
-		"--embd-output-format", "json",
-		"-p", strings.ReplaceAll(query, "\n", " "),
-		"--no-warmup",
-	)
-	cmd.Env = append(os.Environ(), "LD_LIBRARY_PATH=/run/opengl-driver/lib:"+os.Getenv("LD_LIBRARY_PATH"))
-	out, err := cmd.Output()
+	reqBody, _ := json.Marshal(map[string]interface{}{
+		"model": model,
+		"input": strings.ReplaceAll(query, "\n", " "),
+	})
+	resp, err := http.Post(endpoint+"/v1/embeddings", "application/json", bytes.NewReader(reqBody))
 	if err != nil {
-		return nil, fmt.Errorf("llama-embedding: %w", err)
+		return nil, fmt.Errorf("embed request: %w", err)
 	}
-	var resp struct {
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("embed request returned %d: %s", resp.StatusCode, body)
+	}
+	var result struct {
 		Data []struct {
 			Embedding []float64 `json:"embedding"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(out, &resp); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, err
 	}
-	if len(resp.Data) == 0 {
+	if len(result.Data) == 0 {
 		return nil, fmt.Errorf("no embedding returned")
 	}
-	return resp.Data[0].Embedding, nil
+	return result.Data[0].Embedding, nil
 }
 
 // SemanticSearchTool creates an Orchid tool that searches the pre-built index.
@@ -223,13 +224,15 @@ func main() {
 	}
 
 	// Base tools both conditions get
+	logRoot := fmt.Sprintf("/tmp/experiment-%s-%d", mode, time.Now().Unix())
 	baseTools := []orchid.WorkflowOption{
 		orchid.WithTools(
 			orchid.ReadTool(root),
 			orchid.SearchTool(root),
 			orchid.ListTool(root),
 		),
-		orchid.WithLogDir(fmt.Sprintf("/tmp/experiment-%s-%d", mode, time.Now().Unix())),
+		orchid.WithLogDir(logRoot),
+		orchid.WithSQLiteLog(filepath.Join(logRoot, "events.db")),
 		orchid.WithRootDir(root),
 		orchid.WithEffectConcurrency(4),
 	}
@@ -250,6 +253,12 @@ func main() {
 	}
 
 	gen := orchid.NewOpenAIGenerator("http://localhost:8080/v1")
+
+	wf, err := orchid.NewWorkflowWithOptions(gen, baseTools...)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "workflow: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Select questions
 	allQuestions := loadQuestions()
@@ -276,21 +285,14 @@ RULES:
 	for i, q := range selectedQuestions {
 		fmt.Fprintf(os.Stderr, "\n═══ Question %d/%d [%s] ═══\n%s\n\n", i+1, len(selectedQuestions), mode, q)
 
-		wf, err := orchid.NewWorkflowWithOptions(gen, baseTools...)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "workflow: %v\n", err)
-			os.Exit(1)
-		}
-
 		start := time.Now()
 		text, usage, err := wf.Run(
 			context.Background(),
 			purpose,
 			q,
-			orchid.WithConstraints(orchid.Constraints{MaxSteps: 15}),
+			orchid.WithConstraints(orchid.Constraints{MaxSteps: 25}),
 		)
 		elapsed := time.Since(start)
-		wf.Close()
 
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
@@ -302,4 +304,5 @@ RULES:
 		fmt.Printf("Tokens: %d in / %d out\n", usage.InputTokens, usage.OutputTokens)
 		fmt.Printf("Answer:\n%s\n\n", text)
 	}
+	wf.Close()
 }

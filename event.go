@@ -8,6 +8,38 @@ import (
 	"time"
 )
 
+// EventSink receives events as they are appended. Implementations must be
+// thread-safe; Append may be called concurrently from multiple goroutines.
+type EventSink interface {
+	Append(e Event)
+	Close() error
+}
+
+// writerSink adapts an io.Writer into an EventSink (JSONL format, one line per event).
+type writerSink struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *writerSink) Append(e Event) {
+	data, err := json.Marshal(eventRecord{
+		ID:        e.ID,
+		Type:      e.Type.String(),
+		Timestamp: e.Timestamp,
+		ProcessID: e.ProcessID,
+		Data:      e.Data,
+	})
+	if err != nil {
+		return
+	}
+	data = append(data, '\n')
+	s.mu.Lock()
+	s.w.Write(data)
+	s.mu.Unlock()
+}
+
+func (s *writerSink) Close() error { return nil }
+
 // EventType identifies what happened.
 type EventType int
 
@@ -51,42 +83,69 @@ type Event struct {
 
 // EventLog is an append-only, concurrency-safe log.
 type EventLog struct {
-	mu     sync.RWMutex
-	events []Event
-	nextID uint64
-	sink   io.Writer
+	mu        sync.RWMutex
+	events    []Event
+	nextID    uint64
+	writerIdx int // index into sinks of the SetSink writer; -1 if none
+	sinks     []EventSink
 }
 
 func NewEventLog() *EventLog {
-	return &EventLog{}
+	return &EventLog{writerIdx: -1}
 }
 
 // SetSink sets an io.Writer that receives each event as a JSON line on append.
+// It replaces any previously set writer sink but does not affect sinks added
+// via AddSink. Passing nil removes the writer sink.
 func (l *EventLog) SetSink(w io.Writer) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.sink = w
+	if w == nil {
+		if l.writerIdx >= 0 {
+			// Remove the writer sink; copy-on-write.
+			newSinks := make([]EventSink, 0, len(l.sinks)-1)
+			for i, s := range l.sinks {
+				if i != l.writerIdx {
+					newSinks = append(newSinks, s)
+				}
+			}
+			l.sinks = newSinks
+			l.writerIdx = -1
+		}
+		return
+	}
+	ws := &writerSink{w: w}
+	if l.writerIdx >= 0 {
+		// Replace in place; copy-on-write the slice.
+		newSinks := append([]EventSink(nil), l.sinks...)
+		newSinks[l.writerIdx] = ws
+		l.sinks = newSinks
+	} else {
+		// Append; copy-on-write.
+		l.writerIdx = len(l.sinks)
+		l.sinks = append(append([]EventSink(nil), l.sinks...), ws)
+	}
+}
+
+// AddSink registers an additional EventSink that will receive all future events.
+// Sinks are called in registration order. Use SetSink for the JSONL writer.
+func (l *EventLog) AddSink(s EventSink) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.sinks = append(append([]EventSink(nil), l.sinks...), s)
 }
 
 func (l *EventLog) Append(e Event) uint64 {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	e.ID = l.nextID
 	e.Timestamp = time.Now()
-	l.events = append(l.events, e)
 	l.nextID++
-	if l.sink != nil {
-		data, err := json.Marshal(eventRecord{
-			ID:        e.ID,
-			Type:      e.Type.String(),
-			Timestamp: e.Timestamp,
-			ProcessID: e.ProcessID,
-			Data:      e.Data,
-		})
-		if err == nil {
-			data = append(data, '\n')
-			l.sink.Write(data)
-		}
+	l.events = append(l.events, e)
+	sinks := l.sinks // slice header copy; safe after unlock because copy-on-write
+	l.mu.Unlock()
+
+	for _, s := range sinks {
+		s.Append(e)
 	}
 	return e.ID
 }
