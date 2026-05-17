@@ -42,6 +42,7 @@ type Context struct {
 	Tools          []ToolDefinition
 	History        any
 	PendingResults []EffectResult
+	ContextPolicy  ContextPolicy
 }
 
 type ToolResultEntry struct {

@@ -36,6 +36,7 @@ type Process struct {
 	EffectCache    map[string]EffectResult
 	cacheMu        sync.Mutex
 	Usage          TokenUsage
+	ContextPolicy  ContextPolicy
 }
 
 func (p *Process) HasCapability(c Capability) bool {

@@ -11,6 +11,7 @@ func BuildContext(p *Process) Context {
 		Tools:          p.Tools,
 		History:        p.History,
 		PendingResults: p.PendingResults,
+		ContextPolicy:  p.ContextPolicy,
 	}
 
 	for _, e := range events {

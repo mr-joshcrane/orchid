@@ -19,6 +19,25 @@ import (
 	"github.com/mr-joshcrane/orchid/internal/overflow"
 )
 
+// Message is a Bedrock Converse message (user or assistant turn).
+type Message = bedrockMessage
+
+type ContentBlock = bedrockContentBlock
+
+type ToolResult = bedrockToolResult
+
+type TextBlock = bedrockTextBlock
+
+// ContextPolicy rewrites the system prompt and conversation history
+// before each LLM call. It receives the current step number, the
+// purpose string, and the typed message history. It returns the
+// (possibly rewritten) purpose and history.
+//
+// Returning inputs unchanged is always safe. Policies must preserve
+// toolUseId continuity — every toolUse in an assistant message must
+// have a matching toolResult in the subsequent user message.
+type ContextPolicy func(step int, purpose string, history []Message) (string, []Message)
+
 // BedrockGenerator implements Generator using the AWS Bedrock Converse API.
 type BedrockGenerator struct {
 	model          string
@@ -96,6 +115,10 @@ func (g *BedrockGenerator) Generate(ctx Context) Proposal {
 	var history []bedrockMessage
 	if h, ok := ctx.History.([]bedrockMessage); ok {
 		history = h
+	}
+
+	if ctx.ContextPolicy != nil {
+		ctx.Purpose, history = ctx.ContextPolicy(ctx.Step, ctx.Purpose, history)
 	}
 
 	if len(ctx.PendingResults) > 0 {

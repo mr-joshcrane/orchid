@@ -26,7 +26,9 @@ func CapOutput(maxBytes int) orchid.ToolMiddleware {
 			}
 			total := len(result)
 			truncated := result[:maxBytes]
-			truncated += fmt.Sprintf("\n\n[orchid:truncated bytes_total=%d bytes_shown=%d]", total, maxBytes)
+			truncated += fmt.Sprintf("\n\n[orchid:truncated bytes_total=%d bytes_shown=%d]\n"+
+				"IMPORTANT: This output is large and will be evicted from your context in a few steps. "+
+				"State the key findings from this output in your next response so you retain them.", total, maxBytes)
 			hctx.LogAppend(orchid.Event{
 				Type:      orchid.EventOutputTruncated,
 				ProcessID: hctx.ProcessID,

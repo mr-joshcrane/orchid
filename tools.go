@@ -86,7 +86,6 @@ func ReadTool(root string, opts ...ReadOption) Tool {
 
 	absRoot, _ := filepath.Abs(root)
 	var rootWarned sync.Once
-	fullyRead := map[string]bool{}
 
 	params := map[string]Param{
 		"path": {Type: "string", Description: "File path relative to project root", Required: true},
@@ -135,10 +134,6 @@ func ReadTool(root string, opts ...ReadOption) Tool {
 				return "TOOL_REJECTED: binary file (use a binary-capable tool or request specific byte ranges)", nil
 			}
 
-			if fullyRead[target] {
-				return "TOOL_REJECTED: this file has already been read in full and is in your conversation history. Re-read the content above instead of calling this tool again.", nil
-			}
-
 			offset := 0
 			startLine := 1
 			if v := args["line_start"]; v != "" {
@@ -181,10 +176,6 @@ func ReadTool(root string, opts ...ReadOption) Tool {
 				hint := fmt.Sprintf("\n\n[FILE TRUNCATED: showing from line %d. To continue, call read with {\"path\": %q, \"line_start\": %d}]",
 					startLine, args["path"], nextLine)
 				return string(shownData) + hint, nil
-			}
-
-			if startLine == 1 {
-				fullyRead[target] = true
 			}
 
 			return string(data), nil
@@ -322,8 +313,11 @@ func SearchTool(root string, opts ...SearchOption) Tool {
 			var matches []string
 			var totalBytes int
 			filepath.Walk(activeRoot, func(path string, info os.FileInfo, err error) error {
-				if err != nil || info.IsDir() {
-					if info != nil && info.IsDir() && strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
+				if err != nil {
+					return err
+				}
+				if info.IsDir() {
+					if strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
 						return filepath.SkipDir
 					}
 					return nil
@@ -409,7 +403,7 @@ func ListTool(root string, opts ...ListOption) Tool {
 			var totalBytes int
 			filepath.Walk(activeRoot, func(path string, info os.FileInfo, err error) error {
 				if err != nil {
-					return nil
+					return err
 				}
 				if info.IsDir() {
 					if strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
