@@ -20,23 +20,21 @@ const (
 )
 
 type Process struct {
-	ID             string
-	Name           string
-	Purpose        string
-	Generator      Generator
-	Capabilities   map[Capability]bool
-	Permissions    map[Permission]bool
-	View           LogView
-	State          ProcessState
-	Err            error
-	ParentID       string
-	Tools          []ToolDefinition
-	History        any
-	PendingResults []EffectResult
-	EffectCache    map[string]EffectResult
-	cacheMu        sync.Mutex
-	Usage          TokenUsage
-	ContextPolicy  ContextPolicy
+	ID            string
+	Name          string
+	Purpose       string
+	Generator     Generator
+	Capabilities  map[Capability]bool
+	Permissions   map[Permission]bool
+	View          LogView
+	State         ProcessState
+	Err           error
+	ParentID      string
+	Tools         []ToolDefinition
+	EffectCache   map[string]EffectResult
+	cacheMu       sync.Mutex
+	Usage         TokenUsage
+	ContextPolicy ContextPolicy
 }
 
 func (p *Process) HasCapability(c Capability) bool {

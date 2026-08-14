@@ -49,8 +49,13 @@ func (w *Workflow) isParallelizable(toolName string) bool {
 	return false
 }
 
-func (w *Workflow) dispatchParallel(ctx context.Context, p *Process, effects []ProposedEffect) ([]EffectResult, error) {
-	results := make([]EffectResult, len(effects))
+// dispatchParallel runs planned effects, batching consecutive parallelizable
+// ones. A non-parallelizable effect drains the current batch first. Results
+// keep model order regardless of completion order, and an effect that never
+// ran carries an explicit error rather than a zero value, so the derived
+// transcript answers every tool call.
+func (w *Workflow) dispatchParallel(ctx context.Context, p *Process, planned []plannedEffect) ([]EffectResult, error) {
+	results := make([]EffectResult, len(planned))
 	var mu sync.Mutex
 	var fatalErr error
 
@@ -62,7 +67,7 @@ func (w *Workflow) dispatchParallel(ctx context.Context, p *Process, effects []P
 		g.SetLimit(w.concurrency)
 		for _, idx := range batch {
 			g.Go(func() error {
-				r, fatal := w.processEffect(gctx, p, effects[idx])
+				r, fatal := w.processEffect(gctx, p, planned[idx])
 				mu.Lock()
 				results[idx] = r
 				mu.Unlock()
@@ -73,27 +78,39 @@ func (w *Workflow) dispatchParallel(ctx context.Context, p *Process, effects []P
 	}
 
 	var batch []int
-	for i, pe := range effects {
-		if w.isParallelizable(pe.Tool) {
+	for i, pl := range planned {
+		if w.isParallelizable(pl.proposed.Tool) {
 			batch = append(batch, i)
 			continue
 		}
 		if err := flushBatch(batch); err != nil {
 			fatalErr = err
-			return results, fatalErr
+			return w.completeUnrun(p, planned, results), fatalErr
 		}
 		batch = nil
-		r, fatal := w.processEffect(ctx, p, effects[i])
+		r, fatal := w.processEffect(ctx, p, planned[i])
 		results[i] = r
 		if fatal != nil {
-			return results, fatal
+			return w.completeUnrun(p, planned, results), fatal
 		}
 	}
 	if err := flushBatch(batch); err != nil {
 		fatalErr = err
 	}
 
-	return results, fatalErr
+	return w.completeUnrun(p, planned, results), fatalErr
+}
+
+// completeUnrun records a rejection for every planned effect that produced no
+// result, so an abandoned batch cannot leave a tool call unanswered.
+func (w *Workflow) completeUnrun(p *Process, planned []plannedEffect, results []EffectResult) []EffectResult {
+	for i := range results {
+		if results[i].Tool != "" {
+			continue
+		}
+		results[i], _ = w.rejectEffect(p, planned[i], "effect not run: dispatch stopped", true, 0)
+	}
+	return results
 }
 
 type WorkflowOption func(*Workflow)
@@ -247,17 +264,19 @@ type sessionProcess struct {
 	Purpose  string           `json:"purpose"`
 	State    ProcessState     `json:"state"`
 	ParentID string           `json:"parent_id"`
-	History  json.RawMessage  `json:"history"`
 	Usage    TokenUsage       `json:"usage"`
 	Tools    []ToolDefinition `json:"tools"`
 }
 
+// SaveSession writes the events and process table. Conversation history is not
+// stored: it derives from the events, so a restored session reconstructs the
+// exact transcript, including tool results for calls that had already run.
 func (w *Workflow) SaveSession(wr io.Writer) error {
 	data := sessionData{
 		Events: w.Log.All(),
 	}
 	for _, p := range w.Processes.All() {
-		sp := sessionProcess{
+		data.Processes = append(data.Processes, sessionProcess{
 			ID:       p.ID,
 			Name:     p.Name,
 			Purpose:  p.Purpose,
@@ -265,15 +284,7 @@ func (w *Workflow) SaveSession(wr io.Writer) error {
 			ParentID: p.ParentID,
 			Usage:    p.Usage,
 			Tools:    p.Tools,
-		}
-		if hs, ok := w.gen.(HistorySerializer); ok && p.History != nil {
-			histBytes, err := hs.MarshalHistory(p.History)
-			if err != nil {
-				return fmt.Errorf("marshaling history for process %s: %w", p.ID, err)
-			}
-			sp.History = histBytes
-		}
-		data.Processes = append(data.Processes, sp)
+		})
 	}
 	return json.NewEncoder(wr).Encode(data)
 }
@@ -305,13 +316,6 @@ func (w *Workflow) LoadSession(r io.Reader) error {
 		for _, td := range sp.Tools {
 			p.Capabilities[Capability(td.Name)] = true
 			p.Permissions[PermissionFromTool(ToolName(td.Name))] = true
-		}
-		if hs, ok := w.gen.(HistorySerializer); ok && sp.History != nil {
-			hist, err := hs.UnmarshalHistory(sp.History)
-			if err != nil {
-				return fmt.Errorf("unmarshaling history for process %s: %w", sp.ID, err)
-			}
-			p.History = hist
 		}
 		w.Processes.Add(p)
 	}
@@ -420,7 +424,6 @@ func (w *Workflow) Step(ctx context.Context, processID string) (string, []Effect
 		return "", nil, TokenUsage{}
 	}
 
-	p.History = proposal.History
 	p.Usage.InputTokens += proposal.InputTokens
 	p.Usage.OutputTokens += proposal.OutputTokens
 
@@ -441,11 +444,13 @@ func (w *Workflow) Step(ctx context.Context, processID string) (string, []Effect
 		},
 	})
 
+	planned := w.planEffects(p, proposal.Effects)
+
 	var results []EffectResult
 	var fatalErr error
 	if w.concurrency <= 1 {
-		for _, pe := range proposal.Effects {
-			result, fatal := w.processEffect(ctx, p, pe)
+		for _, pl := range planned {
+			result, fatal := w.processEffect(ctx, p, pl)
 			results = append(results, result)
 			if fatal != nil {
 				fatalErr = fatal
@@ -453,10 +458,8 @@ func (w *Workflow) Step(ctx context.Context, processID string) (string, []Effect
 			}
 		}
 	} else {
-		results, fatalErr = w.dispatchParallel(ctx, p, proposal.Effects)
+		results, fatalErr = w.dispatchParallel(ctx, p, planned)
 	}
-
-	p.PendingResults = results
 
 	if fatalErr != nil {
 		p.State = ProcessFailed
@@ -629,161 +632,216 @@ type EffectResult struct {
 	Error     string
 }
 
-func (w *Workflow) invokeHandler(ctx context.Context, p *Process, pe ProposedEffect) (string, bool, error) {
-	if ch, ok := w.Effects.GetContextualHandler(pe.Tool); ok {
-		handler := applyMiddleware(ch, w.middleware)
-		hctx := HandlerContext{
-			Ctx:       ctx,
-			ProcessID: p.ID,
-			ToolName:  pe.Tool,
-			RootDir:   w.rootDir,
-			LogAppend: func(e Event) { w.Log.Append(e) },
-		}
-		result, err := handler(hctx, pe.Args)
-		return result, true, err
-	}
-	if h, ok := w.Effects.GetHandler(pe.Tool); ok {
-		handler := applyMiddleware(adaptLegacyHandler(h), w.middleware)
-		hctx := HandlerContext{
-			Ctx:       ctx,
-			ProcessID: p.ID,
-			ToolName:  pe.Tool,
-			RootDir:   w.rootDir,
-			LogAppend: func(e Event) { w.Log.Append(e) },
-		}
-		result, err := handler(hctx, pe.Args)
-		return result, true, err
-	}
-	return "", false, nil
+// plannedEffect is a proposed call with its tracked Effect and logged intent.
+type plannedEffect struct {
+	proposed ProposedEffect
+	effect   *Effect
 }
 
-func (w *Workflow) processEffect(ctx context.Context, p *Process, pe ProposedEffect) (EffectResult, error) {
-	cacheKey := effectCacheKey(pe)
-	p.cacheMu.Lock()
-	if p.EffectCache != nil {
-		if cached, ok := p.EffectCache[cacheKey]; ok {
-			cached.ToolUseID = pe.ToolUseID
-			p.cacheMu.Unlock()
-			return cached, nil
+// planEffects assigns ids and logs one intent per call in model order, before
+// any dispatch. Logging intents up front is what lets DeriveMessages rebuild
+// the assistant message in the order the model proposed it, independent of the
+// order parallel dispatch happens to complete in.
+func (w *Workflow) planEffects(p *Process, proposed []ProposedEffect) []plannedEffect {
+	planned := make([]plannedEffect, len(proposed))
+	for i, pe := range proposed {
+		eff := &Effect{
+			ID:        w.newEffectID(),
+			ProcessID: p.ID,
+			Tool:      pe.Tool,
+			Args:      pe.Args,
+			State:     EffectPlanned,
 		}
+		// A generator that proposes no id still needs one: the derived
+		// transcript pairs results to calls by it.
+		if pe.ToolUseID == "" {
+			pe.ToolUseID = eff.ID
+		}
+		eff.ToolUseID = pe.ToolUseID
+		eff.EventID = w.Log.Append(Event{
+			Type:      EventEffectIntent,
+			ProcessID: p.ID,
+			Data:      intentData(pe, eff.ID),
+		})
+		w.Effects.Track(eff)
+		planned[i] = plannedEffect{proposed: pe, effect: eff}
 	}
-	p.cacheMu.Unlock()
+	return planned
+}
 
-	eff := &Effect{
-		ID:        w.newEffectID(),
+// intentData records a call's identity and arguments. Arguments are namespaced
+// under ArgPrefix so an argument named "tool" or "effect_id" cannot overwrite
+// the event's own metadata.
+func intentData(pe ProposedEffect, effectID string) map[string]string {
+	data := map[string]string{
+		KeyTool:      pe.Tool,
+		KeyEffectID:  effectID,
+		KeyToolUseID: pe.ToolUseID,
+	}
+	for k, v := range pe.Args {
+		data[ArgPrefix+k] = v
+	}
+	return data
+}
+
+func (w *Workflow) invokeHandler(ctx context.Context, p *Process, pl plannedEffect) (string, error) {
+	pe := pl.proposed
+	hctx := HandlerContext{
+		Ctx:       ctx,
 		ProcessID: p.ID,
-		Tool:      pe.Tool,
-		Args:      pe.Args,
-		State:     EffectPlanned,
+		ToolName:  pe.Tool,
+		RootDir:   w.rootDir,
+		LogAppend: func(e Event) { w.Log.Append(e) },
+		EffectID:  pl.effect.ID,
+		ToolUseID: pe.ToolUseID,
 	}
+	return applyMiddleware(w.handlerFor(pe.Tool), w.middleware)(hctx, pe.Args)
+}
 
-	intentEventID := w.Log.Append(Event{
-		Type:      EventEffectIntent,
-		ProcessID: p.ID,
-		Data:      mergeMap(map[string]string{"tool": pe.Tool, "effect_id": eff.ID}, pe.Args),
-	})
-	eff.EventID = intentEventID
-	w.Effects.Track(eff)
-
-	if !w.hasToolPermission(p, ToolName(pe.Tool)) {
-		eff.State = EffectRejected
-		reason := fmt.Sprintf("process lacks permission: tool:%s", pe.Tool)
-		w.Log.Append(Event{
-			Type:      EventEffectRejected,
-			ProcessID: p.ID,
-			Data:      map[string]string{"effect_id": eff.ID, "reason": reason},
-		})
-		return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: false, Error: reason}, nil
+// handlerFor resolves a tool's handler, preferring a contextual registration
+// and adapting a legacy one. Callers check hasHandler first.
+func (w *Workflow) handlerFor(tool string) ContextualEffectHandler {
+	if ch, ok := w.Effects.GetContextualHandler(tool); ok {
+		return ch
 	}
+	h, _ := w.Effects.GetHandler(tool)
+	return adaptLegacyHandler(h)
+}
 
-	if ok, reason := w.Effects.CheckPolicies(p, eff); !ok {
-		eff.State = EffectRejected
-		w.Log.Append(Event{
-			Type:      EventEffectRejected,
-			ProcessID: p.ID,
-			Data:      map[string]string{"effect_id": eff.ID, "reason": reason},
-		})
-		return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: false, Error: reason}, nil
+func (w *Workflow) hasHandler(tool string) bool {
+	if _, ok := w.Effects.GetContextualHandler(tool); ok {
+		return true
 	}
+	_, ok := w.Effects.GetHandler(tool)
+	return ok
+}
 
-	eff.State = EffectAdmitted
-
-	var toolDef *Tool
-	for i := range w.tools {
-		if w.tools[i].Name == pe.Tool {
-			toolDef = &w.tools[i]
-			break
-		}
-	}
-
-	if toolDef != nil {
-		if reason := validateArgs(toolDef.Params, pe.Args); reason != "" {
-			eff.State = EffectRejected
-			w.Log.Append(Event{
-				Type:      EventEffectRejected,
-				ProcessID: p.ID,
-				Data:      map[string]string{"effect_id": eff.ID, "reason": reason},
-			})
-			return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: true, Error: reason}, nil
-		}
-	}
-
-	_, hasLegacy := w.Effects.GetHandler(pe.Tool)
-	_, hasCtx := w.Effects.GetContextualHandler(pe.Tool)
-	if !hasLegacy && !hasCtx {
-		eff.State = EffectRejected
-		reason := fmt.Sprintf("no handler for tool: %s", pe.Tool)
-		w.Log.Append(Event{
-			Type:      EventEffectRejected,
-			ProcessID: p.ID,
-			Data:      map[string]string{"effect_id": eff.ID, "reason": reason},
-		})
-		return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: true, Error: reason}, nil
-	}
-
-	eff.State = EffectStarted
-
-	start := time.Now()
-	handlerResult, _, err := w.invokeHandler(ctx, p, pe)
-	duration := time.Since(start)
-	if err != nil {
-		eff.State = EffectRejected
-		eff.Result = err.Error()
-		w.Log.Append(Event{
-			Type:      EventEffectRejected,
-			ProcessID: p.ID,
-			Data:      map[string]string{"effect_id": eff.ID, "reason": err.Error(), "duration_ms": strconv.FormatInt(duration.Milliseconds(), 10)},
-		})
-		var fatal error
-		if errors.Is(err, ErrEffectFatal) {
-			fatal = ErrEffectFatal
-		}
-		return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: true, Error: err.Error()}, fatal
-	}
-
-	eff.State = EffectObserved
-	eff.Result = handlerResult
+// logObserved records a completed call's result. Every answered call gets one,
+// including a cache hit, so the derived transcript answers every tool call.
+func (w *Workflow) logObserved(p *Process, pl plannedEffect, result string, duration time.Duration) {
 	w.Log.Append(Event{
 		Type:      EventEffectObserved,
 		ProcessID: p.ID,
 		Data: map[string]string{
-			"effect_id":   eff.ID,
-			"tool":        pe.Tool,
-			"result":      handlerResult,
+			KeyEffectID:   pl.effect.ID,
+			KeyTool:       pl.proposed.Tool,
+			KeyToolUseID:  pl.proposed.ToolUseID,
+			KeyResult:     result,
 			"duration_ms": strconv.FormatInt(duration.Milliseconds(), 10),
 		},
 	})
+}
 
-	eff.State = EffectApplied
+// rejectEffect records a refusal and returns the error result the model sees.
+// admitted distinguishes a call refused before admission (permission, policy)
+// from one that was admitted and then failed (bad arguments, missing handler,
+// handler error).
+func (w *Workflow) rejectEffect(
+	p *Process, pl plannedEffect, reason string, admitted bool, duration time.Duration,
+) (EffectResult, error) {
+	pl.effect.State = EffectRejected
+	pl.effect.Result = reason
+	w.Log.Append(Event{
+		Type:      EventEffectRejected,
+		ProcessID: p.ID,
+		Data: map[string]string{
+			KeyEffectID:   pl.effect.ID,
+			KeyTool:       pl.proposed.Tool,
+			KeyToolUseID:  pl.proposed.ToolUseID,
+			KeyReason:     reason,
+			"duration_ms": strconv.FormatInt(duration.Milliseconds(), 10),
+		},
+	})
+	return EffectResult{
+		Tool:      pl.proposed.Tool,
+		ToolUseID: pl.proposed.ToolUseID,
+		Admitted:  admitted,
+		Error:     reason,
+	}, nil
+}
 
-	er := EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: true, Result: handlerResult}
+// cachedResult returns a previously observed result for an identical call.
+func (w *Workflow) cachedResult(p *Process, pe ProposedEffect) (EffectResult, bool) {
 	p.cacheMu.Lock()
+	defer p.cacheMu.Unlock()
+	cached, ok := p.EffectCache[effectCacheKey(pe)]
+	if !ok {
+		return EffectResult{}, false
+	}
+	cached.ToolUseID = pe.ToolUseID
+	return cached, true
+}
+
+func (w *Workflow) storeResult(p *Process, pe ProposedEffect, result EffectResult) {
+	p.cacheMu.Lock()
+	defer p.cacheMu.Unlock()
 	if p.EffectCache == nil {
 		p.EffectCache = make(map[string]EffectResult)
 	}
-	p.EffectCache[cacheKey] = er
-	p.cacheMu.Unlock()
-	return er, nil
+	p.EffectCache[effectCacheKey(pe)] = result
+}
+
+// validateEffectArgs checks the call against its tool's declared parameters,
+// returning a refusal reason or the empty string. A call for an unregistered
+// tool validates trivially; the missing-handler check refuses it.
+func (w *Workflow) validateEffectArgs(pe ProposedEffect) string {
+	for i := range w.tools {
+		if w.tools[i].Name == pe.Tool {
+			return validateArgs(w.tools[i].Params, pe.Args)
+		}
+	}
+	return ""
+}
+
+// processEffect admits, dispatches, and observes one planned call. Its intent is
+// already logged; every exit records an observation or a rejection, so the
+// derived transcript answers the call.
+func (w *Workflow) processEffect(ctx context.Context, p *Process, pl plannedEffect) (EffectResult, error) {
+	pe := pl.proposed
+	eff := pl.effect
+
+	if cached, ok := w.cachedResult(p, pe); ok {
+		w.logObserved(p, pl, cached.Result, 0)
+		eff.State = EffectApplied
+		return cached, nil
+	}
+
+	if !w.hasToolPermission(p, ToolName(pe.Tool)) {
+		return w.rejectEffect(p, pl, fmt.Sprintf("process lacks permission: tool:%s", pe.Tool), false, 0)
+	}
+	if ok, reason := w.Effects.CheckPolicies(p, eff); !ok {
+		return w.rejectEffect(p, pl, reason, false, 0)
+	}
+
+	eff.State = EffectAdmitted
+
+	if reason := w.validateEffectArgs(pe); reason != "" {
+		return w.rejectEffect(p, pl, reason, true, 0)
+	}
+	if !w.hasHandler(pe.Tool) {
+		return w.rejectEffect(p, pl, fmt.Sprintf("no handler for tool: %s", pe.Tool), true, 0)
+	}
+
+	eff.State = EffectStarted
+	start := time.Now()
+	handlerResult, err := w.invokeHandler(ctx, p, pl)
+	duration := time.Since(start)
+	if err != nil {
+		result, _ := w.rejectEffect(p, pl, err.Error(), true, duration)
+		if errors.Is(err, ErrEffectFatal) {
+			return result, ErrEffectFatal
+		}
+		return result, nil
+	}
+
+	eff.State = EffectObserved
+	eff.Result = handlerResult
+	w.logObserved(p, pl, handlerResult, duration)
+	eff.State = EffectApplied
+
+	result := EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: true, Result: handlerResult}
+	w.storeResult(p, pe, result)
+	return result, nil
 }
 
 func (w *Workflow) hasToolPermission(p *Process, tool ToolName) bool {
@@ -818,17 +876,6 @@ func effectCacheKey(pe ProposedEffect) string {
 		parts = append(parts, k+"="+pe.Args[k])
 	}
 	return pe.Tool + ":" + strings.Join(parts, "&")
-}
-
-func mergeMap(base, overlay map[string]string) map[string]string {
-	out := make(map[string]string, len(base)+len(overlay))
-	for k, v := range base {
-		out[k] = v
-	}
-	for k, v := range overlay {
-		out[k] = v
-	}
-	return out
 }
 
 func validateArgs(params map[string]Param, args map[string]string) string {

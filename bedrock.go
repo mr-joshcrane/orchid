@@ -19,25 +19,6 @@ import (
 	"github.com/mr-joshcrane/orchid/internal/overflow"
 )
 
-// Message is a Bedrock Converse message (user or assistant turn).
-type Message = bedrockMessage
-
-type ContentBlock = bedrockContentBlock
-
-type ToolResult = bedrockToolResult
-
-type TextBlock = bedrockTextBlock
-
-// ContextPolicy rewrites the system prompt and conversation history
-// before each LLM call. It receives the current step number, the
-// purpose string, and the typed message history. It returns the
-// (possibly rewritten) purpose and history.
-//
-// Returning inputs unchanged is always safe. Policies must preserve
-// toolUseId continuity — every toolUse in an assistant message must
-// have a matching toolResult in the subsequent user message.
-type ContextPolicy func(step int, purpose string, history []Message) (string, []Message)
-
 // BedrockGenerator implements Generator using the AWS Bedrock Converse API.
 type BedrockGenerator struct {
 	model          string
@@ -97,68 +78,17 @@ func (g *BedrockGenerator) EstimateTokens(ctx Context) int {
 	return defaultEstimateTokens(ctx)
 }
 
-func (g *BedrockGenerator) MarshalHistory(h any) ([]byte, error) {
-	msgs, ok := h.([]bedrockMessage)
-	if !ok {
-		return json.Marshal(h)
-	}
-	return json.Marshal(msgs)
-}
-
-func (g *BedrockGenerator) UnmarshalHistory(b []byte) (any, error) {
-	var msgs []bedrockMessage
-	err := json.Unmarshal(b, &msgs)
-	return msgs, err
-}
-
 func (g *BedrockGenerator) Generate(ctx Context) Proposal {
-	var history []bedrockMessage
-	if h, ok := ctx.History.([]bedrockMessage); ok {
-		history = h
-	}
+	purpose, history := applyContextPolicy(ctx)
 
-	if ctx.ContextPolicy != nil {
-		ctx.Purpose, history = ctx.ContextPolicy(ctx.Step, ctx.Purpose, history)
-	}
-
-	if len(ctx.PendingResults) > 0 {
-		var toolResults []bedrockContentBlock
-		for _, r := range ctx.PendingResults {
-			status := "success"
-			content := r.Result
-			if r.Error != "" {
-				status = "error"
-				content = r.Error
-			}
-			toolResults = append(toolResults, bedrockContentBlock{
-				ToolResult: &bedrockToolResult{
-					ToolUseID: r.ToolUseID,
-					Content:   []bedrockTextBlock{{Text: content}},
-					Status:    status,
-				},
-			})
-		}
-		history = append(history, bedrockMessage{Role: "user", Content: toolResults})
-	}
-
-	if len(history) == 0 || ctx.LastInput != "" {
-		lastEvent := lastUserInput(ctx.Events)
-		if lastEvent != "" && (len(history) == 0 || !alreadyInHistory(history, lastEvent)) {
-			history = append(history, bedrockMessage{
-				Role:    "user",
-				Content: []bedrockContentBlock{{Text: strPtr(lastEvent)}},
-			})
-		}
-	}
-
-	tools := g.buildTools(ctx.Tools)
 	body := bedrockRequest{
-		Messages: history,
-		System:   []bedrockTextBlock{{Text: ctx.Purpose}},
+		Messages: toBedrockMessages(history),
+		System:   []bedrockTextBlock{{Text: purpose}},
 		InferenceConfig: &bedrockInferenceConfig{
 			Temperature: floatPtr(0),
 		},
 	}
+	tools := g.buildTools(ctx.Tools)
 	if len(tools) > 0 {
 		body.ToolConfig = &bedrockToolConfig{Tools: tools}
 	}
@@ -172,53 +102,59 @@ func (g *BedrockGenerator) Generate(ctx Context) Proposal {
 	raw, err := g.call(requestCtx, payload)
 	if err != nil {
 		trace.save(payload, []byte(err.Error()))
-		return Proposal{Err: err, PromptID: trace.id, History: history}
+		return Proposal{Err: err, PromptID: trace.id}
 	}
 
 	trace.save(payload, raw)
 	p := g.parseResponse(raw)
 	p.PromptID = trace.id
-
-	history = append(history, resp2msg(p))
-	p.History = history
 	return p
 }
 
-func lastUserInput(events []Event) string {
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type == EventUserInput {
-			return events[i].Data["content"]
-		}
+// toBedrockMessages converts the derived history into Converse wire messages.
+func toBedrockMessages(messages []Message) []bedrockMessage {
+	out := make([]bedrockMessage, 0, len(messages))
+	for _, m := range messages {
+		out = append(out, bedrockMessage{Role: m.Role, Content: toBedrockContent(m.Content)})
 	}
-	return ""
+	return out
 }
 
-func alreadyInHistory(history []bedrockMessage, text string) bool {
-	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].Role != "user" {
-			continue
-		}
-		for _, c := range history[i].Content {
-			if c.Text != nil && *c.Text == text {
-				return true
-			}
-		}
+func toBedrockContent(blocks []ContentBlock) []bedrockContentBlock {
+	out := make([]bedrockContentBlock, 0, len(blocks))
+	for _, b := range blocks {
+		out = append(out, bedrockContentBlock{
+			Text:       b.Text,
+			ToolUse:    toBedrockToolUse(b.ToolUse),
+			ToolResult: toBedrockToolResult(b.ToolResult),
+		})
 	}
-	return false
+	return out
 }
 
-func resp2msg(p Proposal) bedrockMessage {
-	var content []bedrockContentBlock
-	if p.Text != "" {
-		content = append(content, bedrockContentBlock{Text: strPtr(p.Text)})
+// toBedrockToolUse widens the neutral string arguments to the Converse input
+// map. Converse accepts any JSON value; orchid carries tool arguments as
+// strings end to end, so every value marshals as a string.
+func toBedrockToolUse(u *ToolUse) *bedrockToolUse {
+	if u == nil {
+		return nil
 	}
-	if p.RawMessage != "" {
-		var msg bedrockMessage
-		if err := json.Unmarshal([]byte(p.RawMessage), &msg); err == nil {
-			return msg
-		}
+	input := make(map[string]any, len(u.Input))
+	for k, v := range u.Input {
+		input[k] = v
 	}
-	return bedrockMessage{Role: "assistant", Content: content}
+	return &bedrockToolUse{ToolUseID: u.ToolUseID, Name: u.Name, Input: input}
+}
+
+func toBedrockToolResult(r *ToolResult) *bedrockToolResult {
+	if r == nil {
+		return nil
+	}
+	content := make([]bedrockTextBlock, len(r.Content))
+	for i, t := range r.Content {
+		content[i] = bedrockTextBlock{Text: t.Text}
+	}
+	return &bedrockToolResult{ToolUseID: r.ToolUseID, Content: content, Status: r.Status}
 }
 
 func (g *BedrockGenerator) buildTools(tools []ToolDefinition) []bedrockTool {

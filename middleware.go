@@ -18,8 +18,9 @@ func adaptRichHandler(h RichEffectHandler) ContextualEffectHandler {
 		}
 		if len(result.Metadata) > 0 {
 			data := map[string]string{
-				"tool":    hctx.ToolName,
-				"content": result.Content,
+				KeyTool:      hctx.ToolName,
+				KeyEffectID:  hctx.EffectID,
+				KeyToolUseID: hctx.ToolUseID,
 			}
 			for k, v := range result.Metadata {
 				data["meta."+k] = v
@@ -28,7 +29,7 @@ func adaptRichHandler(h RichEffectHandler) ContextualEffectHandler {
 				data["mime"] = result.MIME
 			}
 			hctx.LogAppend(Event{
-				Type:      EventEffectObserved,
+				Type:      EventEffectMetadata,
 				ProcessID: hctx.ProcessID,
 				Data:      data,
 			})

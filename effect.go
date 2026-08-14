@@ -35,6 +35,9 @@ type Effect struct {
 	State     EffectState
 	Result    string
 	EventID   uint64
+	// ToolUseID pairs this effect with the model's tool call. It falls back to
+	// ID when the generator proposed no id of its own.
+	ToolUseID string
 }
 
 // EffectHandler executes a specific tool type and returns the result.
@@ -46,6 +49,10 @@ type HandlerContext struct {
 	ToolName  string
 	RootDir   string // populated in Phase 3 via WithRootDir; empty until then
 	LogAppend func(Event)
+	// EffectID and ToolUseID identify the call being handled, so an event a
+	// handler appends itself correlates with the effect's own audit records.
+	EffectID  string
+	ToolUseID string
 }
 
 type ContextualEffectHandler func(hctx HandlerContext, args map[string]string) (string, error)

@@ -20,7 +20,6 @@ type Proposal struct {
 	Err          error
 	PromptID     string
 	RawMessage   string
-	History      any
 	InputTokens  int
 	OutputTokens int
 }
@@ -32,17 +31,18 @@ type ProposedEffect struct {
 }
 
 type Context struct {
-	Ctx            context.Context
-	Name           string
-	Purpose        string
-	Events         []Event
-	LastInput      string
-	ToolResults    []ToolResultEntry
-	Step           int
-	Tools          []ToolDefinition
-	History        any
-	PendingResults []EffectResult
-	ContextPolicy  ContextPolicy
+	Ctx     context.Context
+	Name    string
+	Purpose string
+	Events  []Event
+	// Messages is the conversation derived from Events — the only history a
+	// generator sends. Tool results for dispatched effects are already in it.
+	Messages      []Message
+	LastInput     string
+	ToolResults   []ToolResultEntry
+	Step          int
+	Tools         []ToolDefinition
+	ContextPolicy ContextPolicy
 }
 
 type ToolResultEntry struct {
@@ -116,11 +116,6 @@ type GeneratorFunc func(Context) Proposal
 
 func (f GeneratorFunc) Generate(ctx Context) Proposal {
 	return f(ctx)
-}
-
-type HistorySerializer interface {
-	MarshalHistory(h any) ([]byte, error)
-	UnmarshalHistory(b []byte) (any, error)
 }
 
 type promptTrace struct {
