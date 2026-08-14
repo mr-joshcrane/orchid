@@ -56,6 +56,7 @@ func (w *Workflow) isParallelizable(toolName string) bool {
 // transcript answers every tool call.
 func (w *Workflow) dispatchParallel(ctx context.Context, p *Process, planned []plannedEffect) ([]EffectResult, error) {
 	results := make([]EffectResult, len(planned))
+	done := make([]bool, len(planned))
 	var mu sync.Mutex
 	var fatalErr error
 
@@ -70,6 +71,7 @@ func (w *Workflow) dispatchParallel(ctx context.Context, p *Process, planned []p
 				r, fatal := w.processEffect(gctx, p, planned[idx])
 				mu.Lock()
 				results[idx] = r
+				done[idx] = true
 				mu.Unlock()
 				return fatal
 			})
@@ -85,27 +87,56 @@ func (w *Workflow) dispatchParallel(ctx context.Context, p *Process, planned []p
 		}
 		if err := flushBatch(batch); err != nil {
 			fatalErr = err
-			return w.completeUnrun(p, planned, results), fatalErr
+			return w.completeUnrun(p, planned, results, done), fatalErr
 		}
 		batch = nil
 		r, fatal := w.processEffect(ctx, p, planned[i])
 		results[i] = r
+		done[i] = true
 		if fatal != nil {
-			return w.completeUnrun(p, planned, results), fatal
+			return w.completeUnrun(p, planned, results, done), fatal
 		}
 	}
 	if err := flushBatch(batch); err != nil {
 		fatalErr = err
 	}
 
-	return w.completeUnrun(p, planned, results), fatalErr
+	return w.completeUnrun(p, planned, results, done), fatalErr
 }
 
-// completeUnrun records a rejection for every planned effect that produced no
-// result, so an abandoned batch cannot leave a tool call unanswered.
-func (w *Workflow) completeUnrun(p *Process, planned []plannedEffect, results []EffectResult) []EffectResult {
+// dispatch runs every planned effect and returns one result per call in model
+// order. Both paths answer every call, including calls abandoned after a fatal
+// effect, so the derived transcript never holds an unanswered tool call.
+func (w *Workflow) dispatch(ctx context.Context, p *Process, planned []plannedEffect) ([]EffectResult, error) {
+	if w.concurrency <= 1 {
+		return w.dispatchSequential(ctx, p, planned)
+	}
+	return w.dispatchParallel(ctx, p, planned)
+}
+
+func (w *Workflow) dispatchSequential(ctx context.Context, p *Process, planned []plannedEffect) ([]EffectResult, error) {
+	results := make([]EffectResult, len(planned))
+	done := make([]bool, len(planned))
+	for i, pl := range planned {
+		result, fatal := w.processEffect(ctx, p, pl)
+		results[i] = result
+		done[i] = true
+		if fatal != nil {
+			return w.completeUnrun(p, planned, results, done), fatal
+		}
+	}
+	return results, nil
+}
+
+// completeUnrun records a rejection for every planned effect that never
+// produced a result, so an abandoned dispatch cannot leave a tool call
+// unanswered. done, rather than a zero-value result, marks what ran: an effect
+// may legitimately carry an empty tool name and still have been rejected.
+func (w *Workflow) completeUnrun(
+	p *Process, planned []plannedEffect, results []EffectResult, done []bool,
+) []EffectResult {
 	for i := range results {
-		if results[i].Tool != "" {
+		if done[i] {
 			continue
 		}
 		results[i], _ = w.rejectEffect(p, planned[i], "effect not run: dispatch stopped", true, 0)
@@ -445,21 +476,7 @@ func (w *Workflow) Step(ctx context.Context, processID string) (string, []Effect
 	})
 
 	planned := w.planEffects(p, proposal.Effects)
-
-	var results []EffectResult
-	var fatalErr error
-	if w.concurrency <= 1 {
-		for _, pl := range planned {
-			result, fatal := w.processEffect(ctx, p, pl)
-			results = append(results, result)
-			if fatal != nil {
-				fatalErr = fatal
-				break
-			}
-		}
-	} else {
-		results, fatalErr = w.dispatchParallel(ctx, p, planned)
-	}
+	results, fatalErr := w.dispatch(ctx, p, planned)
 
 	if fatalErr != nil {
 		p.State = ProcessFailed

@@ -2,6 +2,7 @@ package orchid
 
 import (
 	"context"
+	"fmt"
 	"testing"
 )
 
@@ -269,6 +270,46 @@ func TestDeriveMessagesModelOrderUnderParallelDispatch(t *testing.T) {
 	if len(order) != 2 || order[0] != "c_slow" || order[1] != "c_fast" {
 		t.Fatalf("result order = %+v, want [c_slow c_fast]", order)
 	}
+}
+
+// A fatal effect abandons the calls after it. They must still be answered, or
+// the transcript ends on an unanswered tool call and the next request is
+// invalid.
+func TestFatalEffectStillAnswersAbandonedCalls(t *testing.T) {
+	gen := GeneratorFunc(func(ctx Context) Proposal {
+		if ctx.Step > 1 {
+			return Proposal{Text: "done"}
+		}
+		return Proposal{
+			Text: "three calls",
+			Effects: []ProposedEffect{
+				{Tool: "boom", Args: map[string]string{"n": "1"}, ToolUseID: "c1"},
+				{Tool: "boom", Args: map[string]string{"n": "2"}, ToolUseID: "c2"},
+				{Tool: "boom", Args: map[string]string{"n": "3"}, ToolUseID: "c3"},
+			},
+		}
+	})
+	boom := Tool{
+		Name: "boom",
+		ContextualHandler: func(hctx HandlerContext, args map[string]string) (string, error) {
+			if args["n"] == "1" {
+				return "", fmt.Errorf("first failed: %w", ErrEffectFatal)
+			}
+			return "ok", nil
+		},
+	}
+
+	wf, err := NewWorkflowWithOptions(gen, WithTools(boom))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := wf.Spawn("agent", "", []Capability{"boom"}, "")
+	p.Tools = []ToolDefinition{{Name: "boom"}}
+	p.View.Filter = func(e Event) bool { return e.ProcessID == p.ID }
+	wf.Inject(p.ID, "go")
+	wf.Step(context.Background(), p.ID)
+
+	assertToolCallsAnswered(t, DeriveMessages(visibleEvents(p)))
 }
 
 func findToolUse(m Message) *ToolUse {
