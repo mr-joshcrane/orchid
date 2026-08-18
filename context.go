@@ -5,13 +5,12 @@ func BuildContext(p *Process) Context {
 	events := visibleEvents(p)
 
 	ctx := Context{
-		Name:           p.Name,
-		Purpose:        p.Purpose,
-		Events:         events,
-		Tools:          p.Tools,
-		History:        p.History,
-		PendingResults: p.PendingResults,
-		ContextPolicy:  p.ContextPolicy,
+		Name:          p.Name,
+		Purpose:       p.Purpose,
+		Events:        events,
+		Messages:      DeriveMessages(events),
+		Tools:         p.Tools,
+		ContextPolicy: p.ContextPolicy,
 	}
 
 	for _, e := range events {

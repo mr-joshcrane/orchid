@@ -60,20 +60,6 @@ func (g *OpenAIGenerator) EstimateTokens(ctx Context) int {
 	return defaultEstimateTokens(ctx)
 }
 
-func (g *OpenAIGenerator) MarshalHistory(h any) ([]byte, error) {
-	msgs, ok := h.([]openAIMessage)
-	if !ok {
-		return json.Marshal(h)
-	}
-	return json.Marshal(msgs)
-}
-
-func (g *OpenAIGenerator) UnmarshalHistory(b []byte) (any, error) {
-	var msgs []openAIMessage
-	err := json.Unmarshal(b, &msgs)
-	return msgs, err
-}
-
 type openAIMessage struct {
 	Role       string       `json:"role"`
 	Content    string       `json:"content,omitempty"`
@@ -93,37 +79,15 @@ type openAIFunction struct {
 }
 
 func (g *OpenAIGenerator) Generate(ctx Context) Proposal {
-	var history []openAIMessage
-	if h, ok := ctx.History.([]openAIMessage); ok {
-		history = h
-	}
-
-	if len(history) == 0 {
-		history = append(history, openAIMessage{Role: "system", Content: ctx.Purpose})
-	}
-
-	for _, r := range ctx.PendingResults {
-		content := r.Result
-		if r.Error != "" {
-			content = r.Error
-		}
-		history = append(history, openAIMessage{
-			Role:       "tool",
-			Content:    content,
-			ToolCallID: r.ToolUseID,
-		})
-	}
-
-	if ctx.LastInput != "" {
-		lastEvent := lastUserInput(ctx.Events)
-		if lastEvent != "" && !openAIAlreadyInHistory(history, lastEvent) {
-			history = append(history, openAIMessage{Role: "user", Content: lastEvent})
-		}
-	}
+	purpose, history := applyContextPolicy(ctx)
+	messages := append(
+		[]openAIMessage{{Role: "system", Content: purpose}},
+		toOpenAIMessages(history)...,
+	)
 
 	body := map[string]any{
 		"model":       g.model,
-		"messages":    history,
+		"messages":    messages,
 		"temperature": 0,
 	}
 
@@ -138,15 +102,12 @@ func (g *OpenAIGenerator) Generate(ctx Context) Proposal {
 	raw, err := g.call(ctx, payload)
 	if err != nil {
 		trace.save(payload, []byte(err.Error()))
-		return Proposal{Err: err, PromptID: trace.id, History: history}
+		return Proposal{Err: err, PromptID: trace.id}
 	}
 
 	trace.save(payload, raw)
 	p := g.parseResponse(raw)
 	p.PromptID = trace.id
-
-	history = append(history, resp2openAIMsg(p))
-	p.History = history
 	return p
 }
 
@@ -248,27 +209,53 @@ func (g *OpenAIGenerator) buildTools(tools []ToolDefinition) []map[string]any {
 	return out
 }
 
-func resp2openAIMsg(p Proposal) openAIMessage {
-	msg := openAIMessage{Role: "assistant", Content: p.Text}
-	for _, e := range p.Effects {
-		args, _ := json.Marshal(e.Args)
-		msg.ToolCalls = append(msg.ToolCalls, openAICall{
-			ID:   e.ToolUseID,
+// toOpenAIMessages converts the derived history into chat-completions messages.
+func toOpenAIMessages(messages []Message) []openAIMessage {
+	var out []openAIMessage
+	for _, m := range messages {
+		out = append(out, convertOpenAIMessage(m)...)
+	}
+	return out
+}
+
+// convertOpenAIMessage splits one neutral message into the messages the
+// chat-completions format needs: tool results become their own `tool`-role
+// entries, and any remaining text or tool calls become a single entry.
+func convertOpenAIMessage(m Message) []openAIMessage {
+	var out []openAIMessage
+	for _, b := range m.Content {
+		if b.ToolResult == nil {
+			continue
+		}
+		out = append(out, openAIMessage{
+			Role:       "tool",
+			Content:    toolResultText(b.ToolResult),
+			ToolCallID: b.ToolResult.ToolUseID,
+		})
+	}
+	text := messageText(m)
+	calls := openAICalls(m)
+	if text == "" && len(calls) == 0 {
+		return out
+	}
+	return append(out, openAIMessage{Role: m.Role, Content: text, ToolCalls: calls})
+}
+
+func openAICalls(m Message) []openAICall {
+	var calls []openAICall
+	for _, b := range m.Content {
+		if b.ToolUse == nil {
+			continue
+		}
+		args, _ := json.Marshal(b.ToolUse.Input)
+		calls = append(calls, openAICall{
+			ID:   b.ToolUse.ToolUseID,
 			Type: "function",
 			Function: openAIFunction{
-				Name:      e.Tool,
+				Name:      b.ToolUse.Name,
 				Arguments: string(args),
 			},
 		})
 	}
-	return msg
-}
-
-func openAIAlreadyInHistory(history []openAIMessage, text string) bool {
-	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].Role == "user" && history[i].Content == text {
-			return true
-		}
-	}
-	return false
+	return calls
 }

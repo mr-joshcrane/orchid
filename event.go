@@ -56,6 +56,10 @@ const (
 	EventPromptSize
 	EventPromptPressure
 	EventHistoryTruncated
+	// EventEffectMetadata records a rich handler's structured metadata. It is
+	// audit-only: DeriveMessages ignores it, so it cannot duplicate the
+	// EventEffectObserved that carries the tool result.
+	EventEffectMetadata
 )
 
 func (t EventType) String() string {
@@ -64,7 +68,7 @@ func (t EventType) String() string {
 		"EffectIntent", "EffectObserved", "EffectRejected",
 		"ProcessSpawned", "OutputTruncated", "RootOverride",
 		"PermissionFallback", "PromptSize", "PromptPressure",
-		"HistoryTruncated",
+		"HistoryTruncated", "EffectMetadata",
 	}
 	if int(t) < len(names) {
 		return names[t]
