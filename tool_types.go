@@ -13,11 +13,16 @@ type Tool struct {
 	Description string
 	Params      map[string]Param
 
-	// Deprecated: prefer ContextualHandler or RichHandler for new tools.
+	// Handler is the simplest shape: arguments in, result out. Use it for a tool
+	// that needs neither the workflow's root directory nor the event log.
 	Handler EffectHandler
 
+	// ContextualHandler additionally receives the call's HandlerContext, which
+	// carries RootDir and the means to append events.
 	ContextualHandler ContextualEffectHandler
 
+	// RichHandler returns a Result, so structured metadata reaches the audit log
+	// alongside the content the model sees.
 	RichHandler RichEffectHandler
 
 	// Parallelizable marks the tool safe for concurrent execution.
@@ -34,7 +39,7 @@ func (t Tool) With(mw ...ToolMiddleware) Tool {
 	case t.ContextualHandler != nil:
 		base = t.ContextualHandler
 	default:
-		base = adaptLegacyHandler(t.Handler)
+		base = adaptPlainHandler(t.Handler)
 	}
 	t.ContextualHandler = applyMiddleware(base, mw)
 	t.Handler = nil

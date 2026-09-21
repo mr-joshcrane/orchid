@@ -26,9 +26,20 @@ type BedrockGenerator struct {
 	creds          aws.CredentialsProvider
 	retryConfig    *overflow.RetryConfig
 	overflowPolicy overflow.OverflowPolicy
+	contextLimit   int
 }
 
 type BedrockOption func(*BedrockGenerator)
+
+// BedrockWithContextLimit sets the model's context window in tokens, overriding
+// the library's lookup table. Use it when running a model the table does not
+// know: the prompt-pressure events need a limit, and waiting for a library
+// release to learn one is avoidable.
+func BedrockWithContextLimit(tokens int) BedrockOption {
+	return func(g *BedrockGenerator) {
+		g.contextLimit = tokens
+	}
+}
 
 func BedrockWithRetry(attempts int, backoff overflow.BackoffFunc) BedrockOption {
 	return func(g *BedrockGenerator) {
@@ -71,6 +82,9 @@ func NewBedrockGenerator(model string, opts ...BedrockOption) (*BedrockGenerator
 func (g *BedrockGenerator) Model() string { return g.model }
 
 func (g *BedrockGenerator) ModelLimit() int {
+	if g.contextLimit > 0 {
+		return g.contextLimit
+	}
 	return lookupModelLimit(g.model)
 }
 

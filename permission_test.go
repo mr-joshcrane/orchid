@@ -86,7 +86,11 @@ func TestPermissionBundleCustom(t *testing.T) {
 	}
 }
 
-func TestCapabilityFallback(t *testing.T) {
+// TestNoGrantIsRefused pins that a process whose permission set does not cover
+// a tool is refused. There is no tier below the permission check: an admission
+// path that lets a call through and emits a warning instead of denying it is a
+// bypass, not a control.
+func TestNoGrantIsRefused(t *testing.T) {
 	gen := GeneratorFunc(func(ctx Context) Proposal {
 		if len(ctx.ToolResults) > 0 {
 			return Proposal{Text: "done"}
@@ -107,8 +111,8 @@ func TestCapabilityFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Spawned with no grants, and the permission set left empty.
 	p := wf.Spawn("reader", "reads files", nil, "")
-	p.Capabilities[Capability("read")] = true
 	p.Permissions = make(map[Permission]bool)
 	p.Tools = []ToolDefinition{{Name: "read"}}
 	p.View.Filter = func(e Event) bool { return e.ProcessID == p.ID }
@@ -116,20 +120,19 @@ func TestCapabilityFallback(t *testing.T) {
 
 	_, results, _ := wf.Step(context.Background(), p.ID)
 	if len(results) == 0 {
-		t.Fatal("expected results")
+		t.Fatal("expected a result for the proposed call")
 	}
-	if !results[0].Admitted {
-		t.Fatalf("read should be admitted via Capability fallback, error: %s", results[0].Error)
+	if results[0].Admitted {
+		t.Fatal("call was admitted with an empty permission set")
+	}
+	if results[0].Error == "" {
+		t.Fatal("refusal carried no reason for the model to read")
 	}
 
-	var fallbackEvents int
 	for _, e := range wf.Log.All() {
-		if e.Type == EventPermissionFallback {
-			fallbackEvents++
+		if e.Type == EventEffectObserved {
+			t.Fatal("a refused call must not record an observation")
 		}
-	}
-	if fallbackEvents == 0 {
-		t.Fatal("expected EventPermissionFallback warning")
 	}
 }
 
@@ -141,7 +144,7 @@ func TestPermissionDenied(t *testing.T) {
 		}
 	})
 
-	wf, err := NewWorkflow(gen)
+	wf, err := NewWorkflowWithOptions(gen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +163,7 @@ func TestPermissionDenied(t *testing.T) {
 }
 
 func TestSpawnAutoPopulatesPermissions(t *testing.T) {
-	wf, err := NewWorkflow(nopGenerator())
+	wf, err := NewWorkflowWithOptions(nopGenerator())
 	if err != nil {
 		t.Fatal(err)
 	}

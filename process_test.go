@@ -34,15 +34,18 @@ func TestProcessTable_All(t *testing.T) {
 	}
 }
 
-func TestProcess_HasCapability(t *testing.T) {
+func TestProcess_HasPermission(t *testing.T) {
 	p := &Process{
-		Capabilities: map[Capability]bool{"read": true, "write": true},
+		Permissions: map[Permission]bool{
+			PermissionFromTool("read"):  true,
+			PermissionFromTool("write"): true,
+		},
 	}
 
-	if !p.HasCapability("read") {
+	if !p.HasPermission(PermissionFromTool("read")) {
 		t.Fatal("should have read")
 	}
-	if p.HasCapability("bash") {
+	if p.HasPermission(PermissionFromTool("bash")) {
 		t.Fatal("should not have bash")
 	}
 }

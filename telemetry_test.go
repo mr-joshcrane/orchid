@@ -10,7 +10,7 @@ func TestPromptSizeEventEmitted(t *testing.T) {
 		return Proposal{Text: "done"}
 	})
 
-	wf, err := NewWorkflow(gen)
+	wf, err := NewWorkflowWithOptions(gen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestPromptPressureWarnEmitted(t *testing.T) {
 		limit:    1000,
 	}
 
-	wf, err := NewWorkflow(gen)
+	wf, err := NewWorkflowWithOptions(gen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestPromptPressureCriticalEmitted(t *testing.T) {
 		limit:    1000,
 	}
 
-	wf, err := NewWorkflow(gen)
+	wf, err := NewWorkflowWithOptions(gen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestNoPressureUnderThreshold(t *testing.T) {
 		limit:    1000,
 	}
 
-	wf, err := NewWorkflow(gen)
+	wf, err := NewWorkflowWithOptions(gen)
 	if err != nil {
 		t.Fatal(err)
 	}

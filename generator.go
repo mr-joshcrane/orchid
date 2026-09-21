@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type TokenUsage struct {
@@ -72,32 +73,72 @@ type ModelLimiter interface {
 	ModelLimit() int
 }
 
+// modelLimits maps a model id to its context window in tokens. It is a
+// convenience seed, not an authority: a hardcoded table goes stale every time a
+// provider ships a model, and a stale entry is invisible because a miss returns
+// zero, which silently disables the prompt-pressure events that depend on it.
+//
+// Prefer telling the generator its own limit — BedrockWithContextLimit or
+// OpenAIWithContextLimit — which needs no library release to stay correct. When
+// a lookup misses, the EventPromptSize event records model_limit_unknown so the
+// gap shows up in the audit log rather than passing for a healthy zero.
+//
+// Bedrock ids carry an "anthropic." prefix; prefix matching covers the
+// "us."/"eu." cross-region spellings and any trailing version suffix.
 var modelLimits = map[string]int{
-	"anthropic.claude-3-5-sonnet-20241022-v2:0": 200000,
-	"anthropic.claude-3-5-haiku-20241022-v1:0":  200000,
-	"anthropic.claude-3-sonnet-20240229-v1:0":   200000,
-	"anthropic.claude-3-haiku-20240307-v1:0":    200000,
-	"anthropic.claude-v2":                       100000,
-	"gpt-4":                                     128000,
-	"gpt-4-turbo":                               128000,
-	"gpt-4o":                                    128000,
-	"gpt-3.5-turbo":                             16385,
+	// Anthropic, first-party ids.
+	"claude-fable-5-1":  1_000_000,
+	"claude-fable-5":    1_000_000,
+	"claude-mythos-5-1": 1_000_000,
+	"claude-opus-5":     1_000_000,
+	"claude-opus-4-8":   1_000_000,
+	"claude-opus-4-7":   1_000_000,
+	"claude-opus-4-6":   1_000_000,
+	"claude-sonnet-5":   1_000_000,
+	"claude-sonnet-4-6": 1_000_000,
+	"claude-haiku-4-5":  200_000,
+
+	// Anthropic on Bedrock.
+	"anthropic.claude-fable-5-1":  1_000_000,
+	"anthropic.claude-fable-5":    1_000_000,
+	"anthropic.claude-opus-5":     1_000_000,
+	"anthropic.claude-opus-4-8":   1_000_000,
+	"anthropic.claude-opus-4-7":   1_000_000,
+	"anthropic.claude-opus-4-6":   1_000_000,
+	"anthropic.claude-sonnet-5":   1_000_000,
+	"anthropic.claude-sonnet-4-6": 1_000_000,
+	"anthropic.claude-haiku-4-5":  200_000,
+
+	// OpenAI-compatible endpoints.
+	"gpt-4":         128_000,
+	"gpt-4-turbo":   128_000,
+	"gpt-4o":        128_000,
+	"gpt-3.5-turbo": 16_385,
 }
 
+// RegisterModelLimit records a context window for a model id, overriding any
+// seeded value. Registering a prefix covers every id that extends it.
 func RegisterModelLimit(model string, limit int) {
 	modelLimits[model] = limit
 }
 
+// lookupModelLimit resolves a model's context window, returning 0 when the model
+// is unknown. An exact id wins; otherwise the longest matching prefix does.
+// Longest-match rather than first-match because map iteration order is random,
+// so first-match returns a different limit from run to run whenever two prefixes
+// both apply.
 func lookupModelLimit(model string) int {
 	if limit, ok := modelLimits[model]; ok {
 		return limit
 	}
+	best, bestLen := 0, 0
 	for prefix, limit := range modelLimits {
-		if len(model) > len(prefix) && model[:len(prefix)] == prefix {
-			return limit
+		if len(prefix) <= bestLen || !strings.HasPrefix(model, prefix) {
+			continue
 		}
+		best, bestLen = limit, len(prefix)
 	}
-	return 0
+	return best
 }
 
 func defaultEstimateTokens(ctx Context) int {

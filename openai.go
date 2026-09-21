@@ -18,9 +18,20 @@ type OpenAIGenerator struct {
 	bearerToken    string
 	retryConfig    *overflow.RetryConfig
 	overflowPolicy overflow.OverflowPolicy
+	contextLimit   int
 }
 
 type OpenAIOption func(*OpenAIGenerator)
+
+// OpenAIWithContextLimit sets the model's context window in tokens, overriding
+// the library's lookup table. Local and self-hosted endpoints serve models the
+// table cannot know about, and a limit of zero silently disables the
+// prompt-pressure events.
+func OpenAIWithContextLimit(tokens int) OpenAIOption {
+	return func(g *OpenAIGenerator) {
+		g.contextLimit = tokens
+	}
+}
 
 func OpenAIWithModel(model string) OpenAIOption {
 	return func(g *OpenAIGenerator) { g.model = model }
@@ -53,6 +64,9 @@ func NewOpenAIGenerator(endpoint string, opts ...OpenAIOption) *OpenAIGenerator 
 func (g *OpenAIGenerator) Model() string { return g.model }
 
 func (g *OpenAIGenerator) ModelLimit() int {
+	if g.contextLimit > 0 {
+		return g.contextLimit
+	}
 	return lookupModelLimit(g.model)
 }
 

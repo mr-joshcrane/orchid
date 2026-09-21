@@ -112,7 +112,7 @@ func TestCloseFlushesAudit(t *testing.T) {
 }
 
 func TestCloseWithoutLogDirIsNoop(t *testing.T) {
-	wf, err := NewWorkflow(nopGenerator())
+	wf, err := NewWorkflowWithOptions(nopGenerator())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,6 +145,29 @@ func TestMustRunAlwaysCloses(t *testing.T) {
 	}
 	if !hasAudit {
 		t.Fatal("MustRun should have closed and created audit.txt")
+	}
+}
+
+// TestMustRunPropagatesCloseError pins that a failure inside Close reaches the
+// caller. Assigning to err from a deferred function only affects the result when
+// the returns are named; with unnamed returns the assignment targets a dead
+// local and a failed audit write is silently discarded.
+//
+// Construction has to succeed for this to test Close rather than setup, so the
+// log directory is removed by the generator, mid-run.
+func TestMustRunPropagatesCloseError(t *testing.T) {
+	logDir := filepath.Join(t.TempDir(), "logs")
+
+	gen := GeneratorFunc(func(ctx Context) Proposal {
+		// WithLogDir has already created logDir and opened the jsonl sink inside
+		// it. Removing it now leaves Close unable to write the audit file.
+		_ = os.RemoveAll(logDir)
+		return Proposal{Text: "done"}
+	})
+
+	_, _, err := MustRun(context.Background(), gen, "test", "go", WithLogDir(logDir))
+	if err == nil {
+		t.Fatal("expected the Close failure to propagate through MustRun")
 	}
 }
 

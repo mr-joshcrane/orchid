@@ -17,8 +17,9 @@ func main() {
 	}
 	root := os.Args[1]
 
-	wf, err := orchid.NewWorkflow(gen,
-		orchid.SearchTool(root),
+	wf, err := orchid.NewWorkflowWithOptions(gen,
+		orchid.WithRootDir(root),
+		orchid.WithTools(orchid.SearchTool(root)),
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "workflow: %v\n", err)

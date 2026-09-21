@@ -70,10 +70,14 @@ type RichEffectHandler func(hctx HandlerContext, args map[string]string) (Result
 type EffectPolicy func(process *Process, effect *Effect) (bool, string)
 
 // EffectTable manages the lifecycle of all effects.
+//
+// Handlers have exactly one registration path, RegisterTool, which normalises
+// every supported handler shape to a ContextualEffectHandler. A second, parallel
+// map keyed by tool name would admit a nil handler for a tool that set one of
+// the other shapes, and dispatch would then call it.
 type EffectTable struct {
 	mu                 sync.RWMutex
 	effects            map[string]*Effect
-	handlers           map[string]EffectHandler
 	contextualHandlers map[string]ContextualEffectHandler
 	policies           []EffectPolicy
 }
@@ -81,17 +85,12 @@ type EffectTable struct {
 func NewEffectTable() *EffectTable {
 	return &EffectTable{
 		effects:            make(map[string]*Effect),
-		handlers:           make(map[string]EffectHandler),
 		contextualHandlers: make(map[string]ContextualEffectHandler),
 	}
 }
 
-func (et *EffectTable) RegisterHandler(tool string, handler EffectHandler) {
-	et.mu.Lock()
-	defer et.mu.Unlock()
-	et.handlers[tool] = handler
-}
-
+// RegisterTool normalises a tool's handler and registers it under the tool name.
+// It reports an error unless exactly one handler shape is set.
 func (et *EffectTable) RegisterTool(tool Tool) error {
 	handlerCount := 0
 	if tool.Handler != nil {
@@ -118,7 +117,7 @@ func (et *EffectTable) RegisterTool(tool Tool) error {
 	case tool.ContextualHandler != nil:
 		handler = tool.ContextualHandler
 	default:
-		handler = adaptLegacyHandler(tool.Handler)
+		handler = adaptPlainHandler(tool.Handler)
 	}
 	et.contextualHandlers[tool.Name] = handler
 	return nil
@@ -158,11 +157,4 @@ func (et *EffectTable) CheckPolicies(process *Process, effect *Effect) (bool, st
 		}
 	}
 	return true, ""
-}
-
-func (et *EffectTable) GetHandler(tool string) (EffectHandler, bool) {
-	et.mu.RLock()
-	defer et.mu.RUnlock()
-	h, ok := et.handlers[tool]
-	return h, ok
 }

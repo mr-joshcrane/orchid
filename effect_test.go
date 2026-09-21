@@ -26,26 +26,29 @@ func TestEffectTable_GetMissing(t *testing.T) {
 	}
 }
 
-func TestEffectTable_RegisterHandler(t *testing.T) {
+func TestEffectTable_RegisterTool_PlainHandler(t *testing.T) {
 	et := NewEffectTable()
-	et.RegisterHandler("read", func(args map[string]string) (string, error) {
-		return "content", nil
+	err := et.RegisterTool(Tool{
+		Name:    "read",
+		Handler: func(args map[string]string) (string, error) { return "content", nil },
 	})
+	if err != nil {
+		t.Fatalf("registering tool: %v", err)
+	}
 
-	h, ok := et.GetHandler("read")
+	h, ok := et.GetContextualHandler("read")
 	if !ok {
 		t.Fatal("handler should be registered")
 	}
-	result, err := h(nil)
+	result, err := h(HandlerContext{}, nil)
 	if err != nil || result != "content" {
 		t.Fatalf("handler returned %q, %v", result, err)
 	}
 }
 
-func TestEffectTable_GetHandler_Missing(t *testing.T) {
+func TestEffectTable_GetContextualHandler_Missing(t *testing.T) {
 	et := NewEffectTable()
-	_, ok := et.GetHandler("nope")
-	if ok {
+	if _, ok := et.GetContextualHandler("nope"); ok {
 		t.Fatal("should not find unregistered handler")
 	}
 }
@@ -120,12 +123,16 @@ func TestToolHandlerExclusive(t *testing.T) {
 
 func TestEffectHandler_Error(t *testing.T) {
 	et := NewEffectTable()
-	et.RegisterHandler("fail", func(args map[string]string) (string, error) {
-		return "", errors.New("boom")
+	err := et.RegisterTool(Tool{
+		Name:    "fail",
+		Handler: func(args map[string]string) (string, error) { return "", errors.New("boom") },
 	})
+	if err != nil {
+		t.Fatalf("registering tool: %v", err)
+	}
 
-	h, _ := et.GetHandler("fail")
-	_, err := h(nil)
+	h, _ := et.GetContextualHandler("fail")
+	_, err = h(HandlerContext{}, nil)
 	if err == nil || err.Error() != "boom" {
 		t.Fatalf("expected boom error, got %v", err)
 	}

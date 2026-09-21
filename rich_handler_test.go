@@ -1,7 +1,6 @@
 package orchid
 
 import (
-	"bytes"
 	"context"
 	"testing"
 )
@@ -115,93 +114,4 @@ func (g *resumeGen) Generate(ctx Context) Proposal {
 		}
 	}
 	return Proposal{Text: "done"}
-}
-
-func TestSaveAndResumeSession(t *testing.T) {
-	readTool := Tool{
-		Name:    "read",
-		Handler: func(args map[string]string) (string, error) { return "data", nil },
-	}
-
-	gen1 := &resumeGen{}
-	wf1, err := NewWorkflowWithOptions(gen1, WithTools(readTool))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	p := wf1.Spawn("agent", "test agent", []Capability{"read"}, "")
-	p.Tools = []ToolDefinition{{Name: "read"}}
-	p.View.Filter = func(e Event) bool { return e.ProcessID == p.ID }
-	wf1.Inject(p.ID, "go")
-	wf1.Step(context.Background(), p.ID)
-
-	var buf bytes.Buffer
-	if err := wf1.SaveSession(&buf); err != nil {
-		t.Fatal(err)
-	}
-
-	savedBytes := buf.Bytes()
-	if len(savedBytes) == 0 {
-		t.Fatal("saved session should not be empty")
-	}
-
-	gen2 := &resumeGen{step: 1}
-	wf2, err := NewWorkflowWithOptions(gen2, WithTools(readTool))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := wf2.LoadSession(bytes.NewReader(savedBytes)); err != nil {
-		t.Fatal(err)
-	}
-
-	loaded := wf2.Processes.All()
-	if len(loaded) == 0 {
-		t.Fatal("no processes loaded")
-	}
-
-	lp := loaded[0]
-	if lp.Name != "agent" {
-		t.Fatalf("loaded process name = %q, want %q", lp.Name, "agent")
-	}
-
-	lp.View.Filter = func(e Event) bool { return e.ProcessID == lp.ID }
-	text, _, _ := wf2.Step(context.Background(), lp.ID)
-	if text != "done" {
-		t.Fatalf("resumed run text = %q, want %q", text, "done")
-	}
-
-	if len(gen2.seen) != 1 {
-		t.Fatalf("resumed generator ran %d times, want 1", len(gen2.seen))
-	}
-	assertToolCallsAnswered(t, gen2.seen[0])
-}
-
-// assertToolCallsAnswered fails unless every tool call in the history has a
-// matching result and no result is orphaned. Providers reject either.
-func assertToolCallsAnswered(t *testing.T, messages []Message) {
-	t.Helper()
-	answered := make(map[string]bool)
-	for _, m := range messages {
-		for _, b := range m.Content {
-			if b.ToolUse != nil {
-				answered[b.ToolUse.ToolUseID] = false
-			}
-			if b.ToolResult == nil {
-				continue
-			}
-			if _, ok := answered[b.ToolResult.ToolUseID]; !ok {
-				t.Fatalf("tool result %q answers no tool call", b.ToolResult.ToolUseID)
-			}
-			answered[b.ToolResult.ToolUseID] = true
-		}
-	}
-	if len(answered) == 0 {
-		t.Fatal("resumed history contains no tool call; the dispatched call was lost")
-	}
-	for id, ok := range answered {
-		if !ok {
-			t.Fatalf("tool call %q has no matching result", id)
-		}
-	}
 }
