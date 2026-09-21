@@ -37,7 +37,7 @@ func TestRichHandlerRegistration(t *testing.T) {
 	p.Tools = []ToolDefinition{{Name: "rich"}}
 	p.View.Filter = func(e Event) bool { return e.ProcessID == p.ID }
 	wf.Inject(p.ID, "go")
-	_, results, _ := wf.Step(context.Background(), p.ID)
+	_, results, _, _ := wf.Step(context.Background(), p.ID)
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))

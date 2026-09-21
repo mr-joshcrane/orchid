@@ -40,7 +40,7 @@ func TestPermissionBundle(t *testing.T) {
 	p.View.Filter = func(e Event) bool { return e.ProcessID == p.ID }
 	wf.Inject(p.ID, "go")
 
-	_, results, _ := wf.Step(context.Background(), p.ID)
+	_, results, _, _ := wf.Step(context.Background(), p.ID)
 	if len(results) == 0 {
 		t.Fatal("expected results")
 	}
@@ -77,7 +77,7 @@ func TestPermissionBundleCustom(t *testing.T) {
 	p.View.Filter = func(e Event) bool { return e.ProcessID == p.ID }
 	wf.Inject(p.ID, "go")
 
-	_, results, _ := wf.Step(context.Background(), p.ID)
+	_, results, _, _ := wf.Step(context.Background(), p.ID)
 	if len(results) == 0 {
 		t.Fatal("expected results")
 	}
@@ -118,7 +118,7 @@ func TestNoGrantIsRefused(t *testing.T) {
 	p.View.Filter = func(e Event) bool { return e.ProcessID == p.ID }
 	wf.Inject(p.ID, "go")
 
-	_, results, _ := wf.Step(context.Background(), p.ID)
+	_, results, _, _ := wf.Step(context.Background(), p.ID)
 	if len(results) == 0 {
 		t.Fatal("expected a result for the proposed call")
 	}
@@ -153,7 +153,7 @@ func TestPermissionDenied(t *testing.T) {
 	p.Permissions[PermissionReadOnlyFS] = true
 	wf.Inject(p.ID, "go")
 
-	_, results, _ := wf.Step(context.Background(), p.ID)
+	_, results, _, _ := wf.Step(context.Background(), p.ID)
 	if len(results) == 0 {
 		t.Fatal("expected results")
 	}

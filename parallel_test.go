@@ -49,7 +49,7 @@ func TestParallelEffects(t *testing.T) {
 	wf.Inject(p.ID, "go")
 
 	start := time.Now()
-	_, results, _ := wf.Step(context.Background(), p.ID)
+	_, results, _, _ := wf.Step(context.Background(), p.ID)
 	elapsed := time.Since(start)
 
 	if len(results) != 4 {
@@ -100,7 +100,7 @@ func TestParallelPreservesOrder(t *testing.T) {
 	p.View.Filter = func(e Event) bool { return e.ProcessID == p.ID }
 	wf.Inject(p.ID, "go")
 
-	_, results, _ := wf.Step(context.Background(), p.ID)
+	_, results, _, _ := wf.Step(context.Background(), p.ID)
 
 	for i, r := range results {
 		want := fmt.Sprintf("result-%d", i)
@@ -166,7 +166,7 @@ func TestSerialToolDrainsParallel(t *testing.T) {
 	p.View.Filter = func(e Event) bool { return e.ProcessID == p.ID }
 	wf.Inject(p.ID, "go")
 
-	_, results, _ := wf.Step(context.Background(), p.ID)
+	_, results, _, _ := wf.Step(context.Background(), p.ID)
 
 	if len(results) != 4 {
 		t.Fatalf("expected 4 results, got %d", len(results))
@@ -230,7 +230,7 @@ func TestFatalEffectStopsStepSerial(t *testing.T) {
 	p.View.Filter = func(e Event) bool { return e.ProcessID == p.ID }
 	wf.Inject(p.ID, "go")
 
-	_, _, _ = wf.Step(context.Background(), p.ID)
+	_, _, _, _ = wf.Step(context.Background(), p.ID)
 
 	if callCount.Load() != 1 {
 		t.Fatalf("fatal should short-circuit the loop: expected 1 call, got %d", callCount.Load())
@@ -278,7 +278,7 @@ func TestFatalEffectStopsStepParallel(t *testing.T) {
 	p.View.Filter = func(e Event) bool { return e.ProcessID == p.ID }
 	wf.Inject(p.ID, "go")
 
-	_, _, _ = wf.Step(context.Background(), p.ID)
+	_, _, _, _ = wf.Step(context.Background(), p.ID)
 
 	if p.Err == nil {
 		t.Fatal("expected p.Err to be set when a fatal effect occurs in parallel batch")
@@ -332,7 +332,7 @@ func TestFatalEffectStopsStepMixedBatches(t *testing.T) {
 	p.View.Filter = func(e Event) bool { return e.ProcessID == p.ID }
 	wf.Inject(p.ID, "go")
 
-	_, _, _ = wf.Step(context.Background(), p.ID)
+	_, _, _, _ = wf.Step(context.Background(), p.ID)
 
 	if p.Err == nil {
 		t.Fatal("expected p.Err to be set")

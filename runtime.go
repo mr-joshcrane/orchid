@@ -38,6 +38,10 @@ type Workflow struct {
 
 var ErrEffectFatal = errors.New("orchid: fatal effect error")
 
+// ErrProcessNotFound is returned by Step for a process id the workflow does not
+// know. It is distinct from a turn that produced no text.
+var ErrProcessNotFound = errors.New("orchid: process not found")
+
 func (w *Workflow) isParallelizable(toolName string) bool {
 	for i := range w.tools {
 		if w.tools[i].Name == toolName {
@@ -344,10 +348,17 @@ func (w *Workflow) Inject(processID string, input string) {
 	})
 }
 
-func (w *Workflow) Step(ctx context.Context, processID string) (string, []EffectResult, TokenUsage) {
+// Step advances one process by a single turn: it builds the context, asks the
+// generator for a proposal, and dispatches the effects the proposal planned.
+//
+// The error reports why a turn produced nothing. Without it a failed generation
+// is indistinguishable from an empty one, because both return an empty string:
+// the failure is also recorded on the process, but a caller reading only the
+// returns cannot see it.
+func (w *Workflow) Step(ctx context.Context, processID string) (string, []EffectResult, TokenUsage, error) {
 	p := w.Processes.Get(processID)
 	if p == nil {
-		return "", nil, TokenUsage{}
+		return "", nil, TokenUsage{}, fmt.Errorf("%w: %s", ErrProcessNotFound, processID)
 	}
 	p.State = ProcessRunning
 
@@ -369,7 +380,7 @@ func (w *Workflow) Step(ctx context.Context, processID string) (string, []Effect
 	if proposal.Err != nil {
 		p.State = ProcessFailed
 		p.Err = proposal.Err
-		return "", nil, TokenUsage{}
+		return "", nil, TokenUsage{}, proposal.Err
 	}
 
 	p.Usage.InputTokens += proposal.InputTokens
@@ -395,14 +406,19 @@ func (w *Workflow) Step(ctx context.Context, processID string) (string, []Effect
 	planned := w.planEffects(p, proposal.Effects)
 	results, fatalErr := w.dispatch(ctx, p, planned)
 
+	usage := TokenUsage{InputTokens: proposal.InputTokens, OutputTokens: proposal.OutputTokens}
+
+	// A fatal effect still returns its text and results: the turn happened, and
+	// the results answer every call the model made. The error says it cannot be
+	// continued.
 	if fatalErr != nil {
 		p.State = ProcessFailed
 		p.Err = fatalErr
-		return proposal.Text, results, TokenUsage{InputTokens: proposal.InputTokens, OutputTokens: proposal.OutputTokens}
+		return proposal.Text, results, usage, fatalErr
 	}
 
 	p.State = ProcessWaiting
-	return proposal.Text, results, TokenUsage{InputTokens: proposal.InputTokens, OutputTokens: proposal.OutputTokens}
+	return proposal.Text, results, usage, nil
 }
 
 func (w *Workflow) emitPromptTelemetry(gen Generator, orchidCtx Context, processID string) {
@@ -488,14 +504,16 @@ func (w *Workflow) StepUntilDone(ctx context.Context, processID string, c Constr
 	}
 
 	for step := 0; step < maxSteps; step++ {
-		text, results, usage := w.Step(ctx, processID)
+		text, results, usage, err := w.Step(ctx, processID)
 		totalUsage.InputTokens += usage.InputTokens
 		totalUsage.OutputTokens += usage.OutputTokens
 		lastText = text
 
-		p := w.Processes.Get(processID)
-		if p != nil && p.Err != nil {
-			return "", totalUsage, p.Err
+		// Step's error is the authority on whether the turn can be continued.
+		// Reading p.Err instead would also surface a failure left on the process
+		// by an earlier, unrelated call.
+		if err != nil {
+			return "", totalUsage, err
 		}
 
 		if c.MaxTokens > 0 && totalUsage.InputTokens+totalUsage.OutputTokens >= c.MaxTokens {
@@ -515,10 +533,13 @@ func (w *Workflow) StepUntilDone(ctx context.Context, processID string, c Constr
 			w.Inject(processID, inject)
 		}
 		if stop {
-			text, _, usage = w.Step(ctx, processID)
+			text, _, usage, err = w.Step(ctx, processID)
 			totalUsage.InputTokens += usage.InputTokens
 			totalUsage.OutputTokens += usage.OutputTokens
 			lastText = text
+			if err != nil {
+				return "", totalUsage, err
+			}
 			break
 		}
 	}

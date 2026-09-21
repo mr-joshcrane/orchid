@@ -2,6 +2,7 @@ package orchid
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -94,7 +95,7 @@ func TestWorkflow_Step_NoEffects(t *testing.T) {
 	p := wf.Spawn("thinker", "", nil, "")
 	wf.Inject(p.ID, "what?")
 
-	text, results, _ := wf.Step(context.Background(), p.ID)
+	text, results, _, _ := wf.Step(context.Background(), p.ID)
 
 	if text != "thinking" {
 		t.Fatalf("text = %q, want %q", text, "thinking")
@@ -133,7 +134,7 @@ func TestWorkflow_Step_EffectAdmittedAndExecuted(t *testing.T) {
 	p := wf.Spawn("reader", "", []Capability{"read"}, "")
 	wf.Inject(p.ID, "read it")
 
-	_, results, _ := wf.Step(context.Background(), p.ID)
+	_, results, _, _ := wf.Step(context.Background(), p.ID)
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
@@ -146,7 +147,7 @@ func TestWorkflow_Step_EffectAdmittedAndExecuted(t *testing.T) {
 	}
 }
 
-func TestWorkflow_Step_EffectRejectedByCapability(t *testing.T) {
+func TestWorkflow_Step_EffectRejectedByPermission(t *testing.T) {
 	gen := GeneratorFunc(func(ctx Context) Proposal {
 		return Proposal{
 			Text:    "want to write",
@@ -161,7 +162,7 @@ func TestWorkflow_Step_EffectRejectedByCapability(t *testing.T) {
 	p := wf.Spawn("reader", "", []Capability{"read"}, "")
 	wf.Inject(p.ID, "go")
 
-	_, results, _ := wf.Step(context.Background(), p.ID)
+	_, results, _, _ := wf.Step(context.Background(), p.ID)
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
@@ -198,7 +199,7 @@ func TestWorkflow_Step_EffectRejectedByPolicy(t *testing.T) {
 	p := wf.Spawn("reader", "", []Capability{"read"}, "")
 	wf.Inject(p.ID, "go")
 
-	_, results, _ := wf.Step(context.Background(), p.ID)
+	_, results, _, _ := wf.Step(context.Background(), p.ID)
 
 	if results[0].Admitted {
 		t.Fatal("policy should reject")
@@ -223,10 +224,10 @@ func TestWorkflow_Step_NoHandler(t *testing.T) {
 	p := wf.Spawn("test", "", []Capability{"unknown"}, "")
 	wf.Inject(p.ID, "go")
 
-	_, results, _ := wf.Step(context.Background(), p.ID)
+	_, results, _, _ := wf.Step(context.Background(), p.ID)
 
 	if !results[0].Admitted {
-		t.Fatal("should be admitted (has capability)")
+		t.Fatal("should be admitted (has the permission)")
 	}
 	if results[0].Error == "" {
 		t.Fatal("should error with no handler")
@@ -281,14 +282,105 @@ func TestWorkflow_Step_MissingProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text, results, _ := wf.Step(context.Background(), "nonexistent")
+	text, results, _, stepErr := wf.Step(context.Background(), "nonexistent")
 
 	if text != "" || results != nil {
 		t.Fatal("step on missing process should return empty")
 	}
+	// An empty return alone cannot be told apart from a turn that produced no
+	// text, so the unknown id has to be reported.
+	if !errors.Is(stepErr, ErrProcessNotFound) {
+		t.Fatalf("err = %v, want ErrProcessNotFound", stepErr)
+	}
 }
 
-func TestWorkflow_Step_SameEffectNotExecutedTwice(t *testing.T) {
+// TestWorkflow_Step_PropagatesGeneratorError pins that a failed generation is
+// reported to the caller. It was previously recorded on the process and returned
+// as an empty string, so a caller reading only the returns saw success.
+func TestWorkflow_Step_PropagatesGeneratorError(t *testing.T) {
+	boom := errors.New("model refused")
+	gen := GeneratorFunc(func(ctx Context) Proposal {
+		return Proposal{Err: boom}
+	})
+
+	wf, err := NewWorkflowWithOptions(gen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := wf.Spawn("worker", "", nil, "")
+	wf.Inject(p.ID, "go")
+
+	text, results, usage, stepErr := wf.Step(context.Background(), p.ID)
+
+	if !errors.Is(stepErr, boom) {
+		t.Fatalf("err = %v, want the generator's error", stepErr)
+	}
+	if text != "" || results != nil || usage != (TokenUsage{}) {
+		t.Errorf("a failed turn should report nothing: %q %v %+v", text, results, usage)
+	}
+	if p.State != ProcessFailed {
+		t.Errorf("state = %d, want ProcessFailed", p.State)
+	}
+}
+
+// TestWorkflow_Step_PropagatesFatalEffectError pins that a fatal effect is
+// reported, while the turn's text and results are still returned: the calls the
+// model made must stay answered even though the run cannot continue.
+func TestWorkflow_Step_PropagatesFatalEffectError(t *testing.T) {
+	gen := GeneratorFunc(func(ctx Context) Proposal {
+		return Proposal{
+			Text:    "trying",
+			Effects: []ProposedEffect{{Tool: "boom", Args: map[string]string{}}},
+		}
+	})
+	boomTool := Tool{
+		Name: "boom", Description: "fails fatally",
+		Handler: func(map[string]string) (string, error) {
+			return "", fmt.Errorf("unrecoverable: %w", ErrEffectFatal)
+		},
+	}
+
+	wf, err := NewWorkflowWithOptions(gen, WithTools(boomTool))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := wf.Spawn("worker", "", []Capability{"boom"}, "")
+	wf.Inject(p.ID, "go")
+
+	text, results, _, stepErr := wf.Step(context.Background(), p.ID)
+
+	if !errors.Is(stepErr, ErrEffectFatal) {
+		t.Fatalf("err = %v, want ErrEffectFatal", stepErr)
+	}
+	if text != "trying" {
+		t.Errorf("text = %q, want the turn's text", text)
+	}
+	if len(results) != 1 {
+		t.Fatalf("want 1 result so the call stays answered, got %d", len(results))
+	}
+	if p.State != ProcessFailed {
+		t.Errorf("state = %d, want ProcessFailed", p.State)
+	}
+}
+
+// TestStepUntilDone_ReturnsGeneratorError pins that the loop surfaces the error
+// rather than finishing quietly.
+func TestStepUntilDone_ReturnsGeneratorError(t *testing.T) {
+	boom := errors.New("model refused")
+	gen := GeneratorFunc(func(ctx Context) Proposal {
+		return Proposal{Err: boom}
+	})
+
+	wf, err := NewWorkflowWithOptions(gen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, runErr := wf.Run(context.Background(), "p", "go"); !errors.Is(runErr, boom) {
+		t.Fatalf("Run err = %v, want the generator's error", runErr)
+	}
+}
+
+func TestWorkflow_Step_OneCallRunsExactlyOnce(t *testing.T) {
 	callCount := 0
 	gen := GeneratorFunc(func(ctx Context) Proposal {
 		return Proposal{

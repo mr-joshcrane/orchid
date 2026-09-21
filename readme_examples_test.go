@@ -3,6 +3,8 @@ package orchid_test
 import (
 	"bytes"
 	"context"
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -141,7 +143,7 @@ func TestREADME_PermissionBundle(t *testing.T) {
 	p.View.Filter = func(e orchid.Event) bool { return e.ProcessID == p.ID }
 	wf.Inject(p.ID, "go")
 
-	_, results, _ := wf.Step(context.Background(), p.ID)
+	_, results, _, _ := wf.Step(context.Background(), p.ID)
 	if len(results) == 0 {
 		t.Fatal("expected a result")
 	}
@@ -245,5 +247,58 @@ func TestREADME_ContextLimitOverride(t *testing.T) {
 	}
 	if got := limiter.ModelLimit(); got != 1_000_000 {
 		t.Errorf("ModelLimit() = %d, want 1000000", got)
+	}
+}
+
+func TestREADME_Egress(t *testing.T) {
+	allowed := orchidx.NewAllowlist("api.example.com", "*.internal.corp")
+
+	// Transport is the enforcement point.
+	client := &http.Client{Transport: orchidx.Transport(allowed, nil)}
+	if _, err := client.Get("http://evil.test/"); !errors.Is(err, orchidx.ErrEgressDenied) {
+		t.Fatalf("want ErrEgressDenied, got %v", err)
+	}
+
+	// EgressPolicy is the admission check.
+	dir := t.TempDir()
+	wf, err := orchid.NewWorkflowWithOptions(
+		callOnce("fetch", map[string]string{"url": "http://evil.test/exfil"}),
+		orchid.WithRootDir(dir),
+		orchid.WithTools(orchid.Tool{
+			Name:        "fetch",
+			Description: "fetches a url",
+			Params:      map[string]orchid.Param{"url": {Type: "string", Required: true}},
+			Handler:     func(map[string]string) (string, error) { return "should not run", nil },
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf.Effects.AddPolicy(orchidx.EgressPolicy(allowed))
+
+	if _, _, err := wf.Run(context.Background(), "p", "go"); err != nil {
+		t.Fatal(err)
+	}
+
+	var refused bool
+	for _, e := range wf.Log.All() {
+		if e.Type == orchid.EventEffectRejected && strings.Contains(e.Data[orchid.KeyReason], "egress denied") {
+			refused = true
+		}
+	}
+	if !refused {
+		t.Error("the policy did not refuse the unlisted host, or did not record it")
+	}
+
+	// The documented matching rules.
+	for host, want := range map[string]bool{
+		"api.example.com":   true,
+		"a.internal.corp":   true,
+		"internal.corp":     false,
+		"other.example.com": false,
+	} {
+		if got := allowed.Permits(host); got != want {
+			t.Errorf("Permits(%q) = %v, want %v", host, got, want)
+		}
 	}
 }
