@@ -95,6 +95,33 @@ Results are not memoized. A repeated identical call runs again — tools have
 effects, so replaying an earlier result would report state that has since
 changed and record an observation that never happened.
 
+## Egress
+
+Default deny, in two halves. `Transport` is the enforcement point — it refuses a
+dial before a connection is made, so a tool's reachable set is the allowlist
+whatever it tries:
+
+```go
+allowed := orchidx.NewAllowlist("api.example.com", "*.internal.corp")
+client := &http.Client{Transport: orchidx.Transport(allowed, nil)}
+```
+
+`EgressPolicy` is defence in depth at admission. It refuses a call whose
+arguments name an unlisted host, which records the attempt in the event log —
+something a blocked socket cannot do:
+
+```go
+wf.Effects.AddPolicy(orchidx.EgressPolicy(allowed))
+```
+
+The policy inspects **arguments**, so it cannot see what a handler actually
+dials: a tool that ignores its arguments or builds a URL from elsewhere is not
+constrained by it, and a tool with no URL-shaped arguments always passes. That
+is not a claim the tool makes no network calls. Use both.
+
+`"example.com"` matches that host only; `"*.example.com"` matches any subdomain
+at any depth but not the bare domain. An empty allowlist permits nothing.
+
 ## Context policy
 
 Compaction is a pure function of `(step, purpose, history)`, applied identically
@@ -158,8 +185,6 @@ gap is visible in the audit log rather than passing for a healthy zero.
 
 Stated plainly, because the absences are real:
 
-- **No network perimeter.** Built-in tools are confined to `RootDir`, but
-  nothing constrains where a custom tool dials. Use an `EffectPolicy`.
 - **No sub-agents.** `Spawn`, the process table, and per-process log views exist
   and are exercised by tests, but no `spawn` tool is exposed, so a run is a
   single process.
