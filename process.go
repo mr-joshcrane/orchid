@@ -2,9 +2,7 @@ package orchid
 
 import "sync"
 
-// Capability is a tool name granted to a process. It is an alias for ToolName:
-// a process's grants are held in one place, Permissions, so there is no second
-// map that can disagree with it.
+// Capability is a tool name granted to a process. Grants live in Permissions.
 type Capability = ToolName
 
 type LogView struct {

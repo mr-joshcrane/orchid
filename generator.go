@@ -73,18 +73,9 @@ type ModelLimiter interface {
 	ModelLimit() int
 }
 
-// modelLimits maps a model id to its context window in tokens. It is a
-// convenience seed, not an authority: a hardcoded table goes stale every time a
-// provider ships a model, and a stale entry is invisible because a miss returns
-// zero, which silently disables the prompt-pressure events that depend on it.
-//
-// Prefer telling the generator its own limit — BedrockWithContextLimit or
-// OpenAIWithContextLimit — which needs no library release to stay correct. When
-// a lookup misses, the EventPromptSize event records model_limit_unknown so the
-// gap shows up in the audit log rather than passing for a healthy zero.
-//
-// Bedrock ids carry an "anthropic." prefix; prefix matching covers the
-// "us."/"eu." cross-region spellings and any trailing version suffix.
+// modelLimits maps a model id to its context window in tokens. It is a seed, not
+// an authority — prefer BedrockWithContextLimit or OpenAIWithContextLimit.
+// Prefix matching covers Bedrock's cross-region spellings and version suffixes.
 var modelLimits = map[string]int{
 	// Anthropic, first-party ids.
 	"claude-fable-5-1":  1_000_000,
@@ -116,17 +107,13 @@ var modelLimits = map[string]int{
 	"gpt-3.5-turbo": 16_385,
 }
 
-// RegisterModelLimit records a context window for a model id, overriding any
-// seeded value. Registering a prefix covers every id that extends it.
+// RegisterModelLimit records a context window for a model id or prefix.
 func RegisterModelLimit(model string, limit int) {
 	modelLimits[model] = limit
 }
 
-// lookupModelLimit resolves a model's context window, returning 0 when the model
-// is unknown. An exact id wins; otherwise the longest matching prefix does.
-// Longest-match rather than first-match because map iteration order is random,
-// so first-match returns a different limit from run to run whenever two prefixes
-// both apply.
+// lookupModelLimit resolves a model's context window, or 0 if unknown.
+// An exact id wins, then the longest matching prefix.
 func lookupModelLimit(model string) int {
 	if limit, ok := modelLimits[model]; ok {
 		return limit

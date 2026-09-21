@@ -31,10 +31,7 @@ type BedrockGenerator struct {
 
 type BedrockOption func(*BedrockGenerator)
 
-// BedrockWithContextLimit sets the model's context window in tokens, overriding
-// the library's lookup table. Use it when running a model the table does not
-// know: the prompt-pressure events need a limit, and waiting for a library
-// release to learn one is avoidable.
+// BedrockWithContextLimit sets the model's context window, overriding the lookup table.
 func BedrockWithContextLimit(tokens int) BedrockOption {
 	return func(g *BedrockGenerator) {
 		g.contextLimit = tokens

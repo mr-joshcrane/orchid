@@ -41,8 +41,6 @@ func TestAllowlistPermits(t *testing.T) {
 	}
 }
 
-// TestEmptyAllowlistDeniesEverything pins the default-deny posture: a forgotten
-// or empty configuration must close the perimeter, not open it.
 func TestEmptyAllowlistDeniesEverything(t *testing.T) {
 	for _, list := range []*orchidx.Allowlist{orchidx.NewAllowlist(), nil} {
 		for _, host := range []string{"example.com", "localhost", "127.0.0.1", ""} {
@@ -81,8 +79,6 @@ func TestEgressPolicyAdmitsListedHost(t *testing.T) {
 	}
 }
 
-// TestEgressPolicyChecksEveryArgument pins that the host is found wherever it
-// appears, rather than only under a conventional argument name.
 func TestEgressPolicyChecksEveryArgument(t *testing.T) {
 	policy := orchidx.EgressPolicy(orchidx.NewAllowlist("api.example.com"))
 
@@ -97,9 +93,6 @@ func TestEgressPolicyChecksEveryArgument(t *testing.T) {
 	}
 }
 
-// TestEgressPolicyIgnoresNonURLArguments pins the documented limit: a tool with
-// no URL-shaped arguments passes. The policy inspects arguments; it does not
-// establish that a tool makes no network calls.
 func TestEgressPolicyIgnoresNonURLArguments(t *testing.T) {
 	policy := orchidx.EgressPolicy(orchidx.NewAllowlist("api.example.com"))
 
@@ -152,9 +145,6 @@ func TestTransportAllowsListedHost(t *testing.T) {
 	}
 }
 
-// TestTransportIsTheEnforcementPoint demonstrates why both halves exist: a
-// handler that ignores its arguments defeats the admission policy, and only the
-// transport stops it.
 func TestTransportIsTheEnforcementPoint(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("exfiltrated"))
@@ -179,9 +169,6 @@ func TestTransportIsTheEnforcementPoint(t *testing.T) {
 	}
 }
 
-// TestAllowlistEntriesMayCarryAPort pins that an entry and a lookup are
-// normalised the same way. Stripping the port only on lookup meant an entry
-// written with one could never match.
 func TestAllowlistEntriesMayCarryAPort(t *testing.T) {
 	list := orchidx.NewAllowlist("127.0.0.1:8080", "  Example.COM  ", "*.Internal.Corp:443")
 

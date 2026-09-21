@@ -148,19 +148,10 @@ func TestMustRunAlwaysCloses(t *testing.T) {
 	}
 }
 
-// TestMustRunPropagatesCloseError pins that a failure inside Close reaches the
-// caller. Assigning to err from a deferred function only affects the result when
-// the returns are named; with unnamed returns the assignment targets a dead
-// local and a failed audit write is silently discarded.
-//
-// Construction has to succeed for this to test Close rather than setup, so the
-// log directory is removed by the generator, mid-run.
 func TestMustRunPropagatesCloseError(t *testing.T) {
 	logDir := filepath.Join(t.TempDir(), "logs")
 
 	gen := GeneratorFunc(func(ctx Context) Proposal {
-		// WithLogDir has already created logDir and opened the jsonl sink inside
-		// it. Removing it now leaves Close unable to write the audit file.
 		_ = os.RemoveAll(logDir)
 		return Proposal{Text: "done"}
 	})

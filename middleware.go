@@ -4,9 +4,7 @@ package orchid
 // Middleware ordering: the earliest Use call produces the outermost wrapper.
 type ToolMiddleware func(next ContextualEffectHandler) ContextualEffectHandler
 
-// adaptPlainHandler lifts a handler that needs no context into the canonical
-// shape. Callers pass a non-nil handler: RegisterTool and Tool.With select this
-// adapter only when Handler is the shape that was set.
+// adaptPlainHandler lifts a context-free handler into the canonical shape.
 func adaptPlainHandler(h EffectHandler) ContextualEffectHandler {
 	return func(_ HandlerContext, args map[string]string) (string, error) {
 		return h(args)

@@ -13,16 +13,13 @@ type Tool struct {
 	Description string
 	Params      map[string]Param
 
-	// Handler is the simplest shape: arguments in, result out. Use it for a tool
-	// that needs neither the workflow's root directory nor the event log.
+	// Handler is the simplest shape: arguments in, result out.
 	Handler EffectHandler
 
-	// ContextualHandler additionally receives the call's HandlerContext, which
-	// carries RootDir and the means to append events.
+	// ContextualHandler also receives HandlerContext, carrying RootDir and LogAppend.
 	ContextualHandler ContextualEffectHandler
 
-	// RichHandler returns a Result, so structured metadata reaches the audit log
-	// alongside the content the model sees.
+	// RichHandler returns a Result, carrying metadata into the audit log.
 	RichHandler RichEffectHandler
 
 	// Parallelizable marks the tool safe for concurrent execution.

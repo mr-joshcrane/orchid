@@ -321,8 +321,6 @@ func findToolUse(m Message) *ToolUse {
 	return nil
 }
 
-// assertToolCallsAnswered fails unless every tool call in the history has a
-// matching result and no result is orphaned. Providers reject either shape.
 func assertToolCallsAnswered(t *testing.T, messages []Message) {
 	t.Helper()
 	answered := make(map[string]bool)

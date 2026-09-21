@@ -287,16 +287,11 @@ func TestWorkflow_Step_MissingProcess(t *testing.T) {
 	if text != "" || results != nil {
 		t.Fatal("step on missing process should return empty")
 	}
-	// An empty return alone cannot be told apart from a turn that produced no
-	// text, so the unknown id has to be reported.
 	if !errors.Is(stepErr, ErrProcessNotFound) {
 		t.Fatalf("err = %v, want ErrProcessNotFound", stepErr)
 	}
 }
 
-// TestWorkflow_Step_PropagatesGeneratorError pins that a failed generation is
-// reported to the caller. It was previously recorded on the process and returned
-// as an empty string, so a caller reading only the returns saw success.
 func TestWorkflow_Step_PropagatesGeneratorError(t *testing.T) {
 	boom := errors.New("model refused")
 	gen := GeneratorFunc(func(ctx Context) Proposal {
@@ -323,9 +318,6 @@ func TestWorkflow_Step_PropagatesGeneratorError(t *testing.T) {
 	}
 }
 
-// TestWorkflow_Step_PropagatesFatalEffectError pins that a fatal effect is
-// reported, while the turn's text and results are still returned: the calls the
-// model made must stay answered even though the run cannot continue.
 func TestWorkflow_Step_PropagatesFatalEffectError(t *testing.T) {
 	gen := GeneratorFunc(func(ctx Context) Proposal {
 		return Proposal{
@@ -363,8 +355,6 @@ func TestWorkflow_Step_PropagatesFatalEffectError(t *testing.T) {
 	}
 }
 
-// TestStepUntilDone_ReturnsGeneratorError pins that the loop surfaces the error
-// rather than finishing quietly.
 func TestStepUntilDone_ReturnsGeneratorError(t *testing.T) {
 	boom := errors.New("model refused")
 	gen := GeneratorFunc(func(ctx Context) Proposal {

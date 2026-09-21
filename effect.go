@@ -69,12 +69,8 @@ type RichEffectHandler func(hctx HandlerContext, args map[string]string) (Result
 // EffectPolicy decides whether an effect should be admitted.
 type EffectPolicy func(process *Process, effect *Effect) (bool, string)
 
-// EffectTable manages the lifecycle of all effects.
-//
-// Handlers have exactly one registration path, RegisterTool, which normalises
-// every supported handler shape to a ContextualEffectHandler. A second, parallel
-// map keyed by tool name would admit a nil handler for a tool that set one of
-// the other shapes, and dispatch would then call it.
+// EffectTable manages the lifecycle of all effects. RegisterTool is the only
+// handler registration path; it normalises every shape to a ContextualEffectHandler.
 type EffectTable struct {
 	mu                 sync.RWMutex
 	effects            map[string]*Effect
@@ -89,8 +85,7 @@ func NewEffectTable() *EffectTable {
 	}
 }
 
-// RegisterTool normalises a tool's handler and registers it under the tool name.
-// It reports an error unless exactly one handler shape is set.
+// RegisterTool registers a tool's handler, erroring unless exactly one shape is set.
 func (et *EffectTable) RegisterTool(tool Tool) error {
 	handlerCount := 0
 	if tool.Handler != nil {

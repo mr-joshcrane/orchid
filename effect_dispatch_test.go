@@ -7,7 +7,6 @@ import (
 	"testing"
 )
 
-// scriptedGen replays one batch of proposed calls per step.
 type scriptedGen struct {
 	steps [][]ProposedEffect
 	i     int
@@ -32,11 +31,6 @@ func observedResults(events []Event, tool string) []string {
 	return out
 }
 
-// TestEffectsAreNotMemoized pins that an identical call runs again rather than
-// replaying an earlier result. Memoizing by tool and arguments treats effects as
-// pure functions of their arguments, which makes a read after a write return the
-// pre-write value and makes the event log assert an observation that never
-// happened.
 func TestEffectsAreNotMemoized(t *testing.T) {
 	state := map[string]string{"f": "v1"}
 	read := Tool{
@@ -83,9 +77,6 @@ func TestEffectsAreNotMemoized(t *testing.T) {
 	}
 }
 
-// TestPolicyRunsForEveryCall pins that admission is evaluated per call. A result
-// cache consulted before the guards would serve a repeat call without asking the
-// policy, so a permission revoked mid-run would not take effect.
 func TestPolicyRunsForEveryCall(t *testing.T) {
 	read := Tool{
 		Name:        "read",

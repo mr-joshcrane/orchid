@@ -8,10 +8,6 @@ import (
 	"testing"
 )
 
-// TestLogRoundTripsToIdenticalTranscript is the library's central claim made
-// executable: the conversation is a projection of the event log, so a log
-// written to disk and read back must derive the exact transcript the run sent.
-// If this fails, the log is not a source of truth.
 func TestLogRoundTripsToIdenticalTranscript(t *testing.T) {
 	slow := Tool{
 		Name:           "work",
@@ -63,8 +59,6 @@ func TestLogRoundTripsToIdenticalTranscript(t *testing.T) {
 	assertToolCallsAnswered(t, fromDisk)
 }
 
-// TestReadEventsRejectsNewerVersion pins that a log written by a newer build is
-// refused rather than guessed at.
 func TestReadEventsRejectsNewerVersion(t *testing.T) {
 	line := `{"v":9999,"id":0,"type":"UserInput","timestamp":"2026-01-01T00:00:00Z","process_id":"p","data":{"content":"hi"}}`
 
@@ -77,8 +71,6 @@ func TestReadEventsRejectsNewerVersion(t *testing.T) {
 	}
 }
 
-// TestReadEventsAcceptsUnversionedLog pins that a log written before the version
-// field existed still reads: its field meanings match version 1.
 func TestReadEventsAcceptsUnversionedLog(t *testing.T) {
 	line := `{"id":0,"type":"UserInput","timestamp":"2026-01-01T00:00:00Z","process_id":"p","data":{"content":"hi"}}`
 
@@ -91,9 +83,6 @@ func TestReadEventsAcceptsUnversionedLog(t *testing.T) {
 	}
 }
 
-// TestReadEventsRejectsUnknownType pins that an unrecognised event type is an
-// error. Defaulting to the zero EventType would read it as EventUserInput and
-// inject a fabricated user turn into the derived transcript.
 func TestReadEventsRejectsUnknownType(t *testing.T) {
 	line := `{"v":1,"id":0,"type":"SomethingElse","timestamp":"2026-01-01T00:00:00Z","process_id":"p","data":{}}`
 
@@ -106,8 +95,6 @@ func TestReadEventsRejectsUnknownType(t *testing.T) {
 	}
 }
 
-// TestReadEventsRejectsUnknownField pins strict decoding, so a field this build
-// does not understand cannot be silently dropped.
 func TestReadEventsRejectsUnknownField(t *testing.T) {
 	line := `{"v":1,"id":0,"type":"UserInput","timestamp":"2026-01-01T00:00:00Z","process_id":"p","data":{},"surprise":true}`
 
@@ -116,8 +103,6 @@ func TestReadEventsRejectsUnknownField(t *testing.T) {
 	}
 }
 
-// TestWrittenEventsCarryTheVersion pins that both write paths stamp the version.
-// A log that omits it is indistinguishable from a pre-versioning log.
 func TestWrittenEventsCarryTheVersion(t *testing.T) {
 	log := NewEventLog()
 	var sink bytes.Buffer

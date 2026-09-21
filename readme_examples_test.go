@@ -15,19 +15,12 @@ import (
 	"github.com/mr-joshcrane/orchid/orchidx"
 )
 
-// The README is the library's public claim about itself. The previous one
-// documented an API that did not exist and a MustRun error path that silently
-// dropped failures, and nothing caught either. These tests exercise the
-// documented surface from outside the package, so a README example that stops
-// compiling or stops working fails the build.
-
 func stubGen(text string) orchid.Generator {
 	return orchid.GeneratorFunc(func(ctx orchid.Context) orchid.Proposal {
 		return orchid.Proposal{Text: text}
 	})
 }
 
-// callOnce proposes one call to the named tool, then finishes.
 func callOnce(tool string, args map[string]string) orchid.Generator {
 	var called bool
 	return orchid.GeneratorFunc(func(ctx orchid.Context) orchid.Proposal {

@@ -325,10 +325,6 @@ func TestWithSQLiteLog_Stub_ReturnsError(t *testing.T) {
 	}
 }
 
-// TestEventTypeNamesAreAligned pins each EventType to its string. The names live
-// in a slice indexed by the iota value, so inserting or removing a constant
-// shifts every name after it. Events serialise by name, so a misalignment
-// silently rewrites the log format rather than failing to compile.
 func TestEventTypeNamesAreAligned(t *testing.T) {
 	want := map[EventType]string{
 		EventUserInput:        "UserInput",
@@ -351,8 +347,6 @@ func TestEventTypeNamesAreAligned(t *testing.T) {
 		}
 	}
 
-	// Every declared constant must have a name: the highest known value plus one
-	// must fall off the end, and nothing below it may.
 	for i := 0; i <= int(EventEffectMetadata); i++ {
 		if got := EventType(i).String(); strings.HasPrefix(got, "EventType(") {
 			t.Errorf("EventType(%d) has no name; names slice is short", i)

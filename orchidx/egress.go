@@ -10,33 +10,21 @@ import (
 	"github.com/mr-joshcrane/orchid"
 )
 
-// Allowlist is the set of hosts an agent may reach. It is default-deny: an empty
-// allowlist permits nothing, so forgetting to configure one fails closed rather
-// than opening the perimeter.
+// Allowlist is the set of hosts an agent may reach. An empty or nil Allowlist
+// permits nothing. Entries match case-insensitively, port ignored:
 //
-// Entries are matched case-insensitively, with the port ignored:
-//
-//	"example.com"    matches example.com, and nothing below it
-//	"*.example.com"  matches any subdomain at any depth, but not example.com
-//	"10.0.0.1"       matches that address exactly
-//
-// A leading "*." is the only pattern form. "example.com" deliberately does not
-// cover its subdomains: an allowlist that silently widened to every host under
-// a domain would not be one.
+//	"example.com"    that host only, not its subdomains
+//	"*.example.com"  any subdomain at any depth, not the bare domain
+//	"10.0.0.1"       that address exactly
 type Allowlist struct {
 	exact  map[string]bool
 	suffix []string // each stored with its leading dot, e.g. ".example.com"
 }
 
-// normalizeHost reduces a host or pattern to its comparable form: lowercase, no
-// surrounding space, no port, no brackets around an IPv6 literal.
-//
-// Entries and lookups both go through this. Normalising only on lookup would
-// mean an entry written as "localhost:8080" could never match, because the
-// lookup strips the port the entry still carries.
+// normalizeHost lowercases and strips space, port and IPv6 brackets.
+// Both entries and lookups go through it.
 func normalizeHost(host string) string {
 	h := strings.ToLower(strings.TrimSpace(host))
-	// A host:port splits cleanly; a bare host does not, and is used as-is.
 	if bare, _, err := net.SplitHostPort(h); err == nil {
 		h = bare
 	}
@@ -47,8 +35,6 @@ func normalizeHost(host string) string {
 func NewAllowlist(hosts ...string) *Allowlist {
 	a := &Allowlist{exact: make(map[string]bool, len(hosts))}
 	for _, h := range hosts {
-		// The wildcard is checked before normalising, since "*." is not part of
-		// the host and a bare "*.example.com" carries no port to strip.
 		if rest, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(h)), "*."); ok {
 			if rest = normalizeHost(rest); rest != "" {
 				a.suffix = append(a.suffix, "."+rest)
@@ -75,8 +61,6 @@ func (a *Allowlist) Permits(host string) bool {
 		return true
 	}
 	for _, suffix := range a.suffix {
-		// The stored leading dot is what stops "evil-example.com" from matching
-		// "*.example.com", and "example.com.evil.com" from matching either.
 		if strings.HasSuffix(h, suffix) {
 			return true
 		}
@@ -84,7 +68,6 @@ func (a *Allowlist) Permits(host string) bool {
 	return false
 }
 
-// String renders the allowlist for an error message.
 func (a *Allowlist) String() string {
 	if a == nil {
 		return "(none)"
@@ -103,18 +86,9 @@ func (a *Allowlist) String() string {
 }
 
 // EgressPolicy refuses a call whose arguments name an http or https host outside
-// the allowlist.
-//
-// This is an admission check on arguments, not a network perimeter. It cannot
-// see what a handler actually dials: a tool that ignores its arguments, builds a
-// URL from elsewhere, or reaches the network by another means is not constrained
-// by it. Use Transport for enforcement and this for defence in depth — refusing
-// at admission records the attempt in the event log, which a blocked socket does
-// not.
-//
-// Arguments that do not parse as an http or https URL are not inspected, so a
-// tool with no URL-shaped arguments always passes. That is not a statement that
-// the tool makes no network calls.
+// the allowlist. It inspects arguments only, so it is not a perimeter — a
+// handler that ignores its arguments is unconstrained by it. Use Transport to
+// enforce; use this to record the attempt in the event log.
 func EgressPolicy(allowed *Allowlist) orchid.EffectPolicy {
 	return func(p *orchid.Process, e *orchid.Effect) (bool, string) {
 		for name, value := range e.Args {
@@ -133,7 +107,7 @@ func EgressPolicy(allowed *Allowlist) orchid.EffectPolicy {
 	}
 }
 
-// httpHost returns the host of an http or https URL, and whether value was one.
+// httpHost returns the host of an http or https URL.
 func httpHost(value string) (string, bool) {
 	if !strings.HasPrefix(value, "http://") && !strings.HasPrefix(value, "https://") {
 		return "", false
@@ -148,10 +122,7 @@ func httpHost(value string) (string, bool) {
 // ErrEgressDenied is returned by Transport for a request outside the allowlist.
 var ErrEgressDenied = fmt.Errorf("orchidx: egress denied")
 
-// Transport wraps base so requests to hosts outside the allowlist fail before a
-// connection is made. Give it to the http.Client a tool uses, and the tool's
-// reachable set is the allowlist regardless of what it tries to dial.
-//
+// Transport wraps base so requests outside the allowlist fail before connecting.
 // A nil base uses http.DefaultTransport.
 func Transport(allowed *Allowlist, base http.RoundTripper) http.RoundTripper {
 	if base == nil {

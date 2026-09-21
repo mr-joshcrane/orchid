@@ -5,10 +5,6 @@ import (
 	"testing"
 )
 
-// TestCurrentModelsResolveALimit guards the failure mode that made the
-// prompt-pressure events dead code: every entry in the table had aged out, so
-// every lookup returned zero, and a zero limit disables the pressure checks
-// without reporting anything. A model anyone would actually run must resolve.
 func TestCurrentModelsResolveALimit(t *testing.T) {
 	for _, model := range []string{
 		"claude-opus-5",
@@ -25,9 +21,6 @@ func TestCurrentModelsResolveALimit(t *testing.T) {
 	}
 }
 
-// TestModelLimitPrefixIsDeterministic pins longest-prefix resolution. Iterating
-// the table and taking the first prefix that matches returns a different answer
-// from run to run, because Go randomises map iteration order.
 func TestModelLimitPrefixIsDeterministic(t *testing.T) {
 	RegisterModelLimit("test-model", 1_000)
 	RegisterModelLimit("test-model-large", 500_000)
@@ -48,8 +41,6 @@ func TestModelLimitPrefixIsDeterministic(t *testing.T) {
 	}
 }
 
-// TestContextLimitOverrideBeatsTable pins that a caller can supply a limit for a
-// model the table does not know, without waiting on a library release.
 func TestContextLimitOverrideBeatsTable(t *testing.T) {
 	gen := NewOpenAIGenerator("http://localhost:1",
 		OpenAIWithModel("some-local-model"),
@@ -63,9 +54,6 @@ func TestContextLimitOverrideBeatsTable(t *testing.T) {
 	}
 }
 
-// TestUnknownModelLimitIsReported pins that an unknown context window is stated
-// in the log. Pressure checks are gated on a non-zero limit, so without this
-// marker an unmeasured run is indistinguishable from a run with plenty of room.
 func TestUnknownModelLimitIsReported(t *testing.T) {
 	gen := GeneratorFunc(func(ctx Context) Proposal {
 		return Proposal{Text: "done"}
@@ -97,8 +85,6 @@ func TestUnknownModelLimitIsReported(t *testing.T) {
 	}
 }
 
-// TestKnownModelLimitIsNotMarkedUnknown is the other half: a resolved limit must
-// not carry the marker, or the marker means nothing.
 func TestKnownModelLimitIsNotMarkedUnknown(t *testing.T) {
 	gen := &fixedLimitGenerator{limit: 200_000}
 
@@ -129,8 +115,6 @@ func (g *fixedLimitGenerator) Generate(ctx Context) Proposal { return Proposal{T
 func (g *fixedLimitGenerator) Model() string                 { return "test-fixed" }
 func (g *fixedLimitGenerator) ModelLimit() int               { return g.limit }
 
-// TestBedrockIDSpellingsResolve covers the cross-region prefixes Bedrock uses,
-// which extend the plain "anthropic." ids rather than replacing them.
 func TestBedrockIDSpellingsResolve(t *testing.T) {
 	RegisterModelLimit("us.anthropic.claude-opus-5", 1_000_000)
 	t.Cleanup(func() { delete(modelLimits, "us.anthropic.claude-opus-5") })
@@ -145,8 +129,6 @@ func TestBedrockIDSpellingsResolve(t *testing.T) {
 		}
 	}
 
-	// A bare family name is shorter than every table entry, so it matches no
-	// prefix and must not resolve to some sibling model's window.
 	if limit := lookupModelLimit("claude"); limit != 0 {
 		t.Errorf("lookupModelLimit(%q) = %d, want 0", "claude", limit)
 	}

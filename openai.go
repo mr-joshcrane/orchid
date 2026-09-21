@@ -23,10 +23,7 @@ type OpenAIGenerator struct {
 
 type OpenAIOption func(*OpenAIGenerator)
 
-// OpenAIWithContextLimit sets the model's context window in tokens, overriding
-// the library's lookup table. Local and self-hosted endpoints serve models the
-// table cannot know about, and a limit of zero silently disables the
-// prompt-pressure events.
+// OpenAIWithContextLimit sets the model's context window, overriding the lookup table.
 func OpenAIWithContextLimit(tokens int) OpenAIOption {
 	return func(g *OpenAIGenerator) {
 		g.contextLimit = tokens

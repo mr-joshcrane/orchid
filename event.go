@@ -56,8 +56,7 @@ const (
 	EventEffectMetadata
 )
 
-// eventTypeNames is indexed by EventType. It is the serialised form of the
-// type, so both String and parseEventType read it and cannot disagree.
+// eventTypeNames is indexed by EventType and is the type's serialised form.
 var eventTypeNames = []string{
 	"UserInput", "AssistantOutput",
 	"EffectIntent", "EffectObserved", "EffectRejected",
@@ -73,9 +72,7 @@ func (t EventType) String() string {
 	return fmt.Sprintf("EventType(%d)", t)
 }
 
-// parseEventType resolves a serialised type name. An unrecognised name is an
-// error rather than a zero value: silently reading an unknown event as
-// EventUserInput would inject fabricated turns into a derived transcript.
+// parseEventType resolves a serialised type name.
 func parseEventType(name string) (EventType, error) {
 	for i, n := range eventTypeNames {
 		if n == name {
@@ -197,12 +194,7 @@ func (l *EventLog) Since(id uint64) []Event {
 }
 
 // EventLogVersion is the schema version stamped on every serialised event.
-//
-// The log is the source of truth for a run: the conversation, the audit trail,
-// and any future replay all derive from it. An unversioned log cannot tell a
-// reader that the writer's schema differed, so a shape change would be read as
-// valid data and produce a subtly wrong transcript. Bump this when the meaning
-// of a field changes, and teach readEventRecord to migrate the older shape.
+// Bump it when a field's meaning changes, and migrate the old shape in eventRecord.event.
 const EventLogVersion = 1
 
 type eventRecord struct {
@@ -226,9 +218,7 @@ func newEventRecord(e Event) eventRecord {
 }
 
 func (r eventRecord) event() (Event, error) {
-	// Version 0 is a log written before the schema was versioned. Its field
-	// meanings match version 1, so it reads cleanly; anything above the version
-	// this build knows was written by a newer writer and cannot be interpreted.
+	// Version 0 predates the version field and matches version 1.
 	if r.Version > EventLogVersion {
 		return Event{}, fmt.Errorf(
 			"orchid: event log version %d is newer than this build supports (%d)",
@@ -248,13 +238,8 @@ func (r eventRecord) event() (Event, error) {
 	}, nil
 }
 
-// ReadEvents decodes a JSONL event log, the format WriteTo and WithLogDir write.
-// It is the counterpart that makes the log replayable: the events it returns can
-// be passed to DeriveMessages to reconstruct the exact transcript a run sent.
-//
-// Decoding is strict. An unknown field, an unrecognised event type, or a version
-// this build does not understand is an error, because a log that is silently
-// misread is worse than one that refuses to load.
+// ReadEvents decodes the JSONL log written by WriteTo and WithLogDir.
+// Decoding is strict: an unknown field, type, or version is an error.
 func ReadEvents(r io.Reader) ([]Event, error) {
 	dec := json.NewDecoder(r)
 	dec.DisallowUnknownFields()

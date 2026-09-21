@@ -86,10 +86,6 @@ func TestPermissionBundleCustom(t *testing.T) {
 	}
 }
 
-// TestNoGrantIsRefused pins that a process whose permission set does not cover
-// a tool is refused. There is no tier below the permission check: an admission
-// path that lets a call through and emits a warning instead of denying it is a
-// bypass, not a control.
 func TestNoGrantIsRefused(t *testing.T) {
 	gen := GeneratorFunc(func(ctx Context) Proposal {
 		if len(ctx.ToolResults) > 0 {
@@ -111,7 +107,6 @@ func TestNoGrantIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Spawned with no grants, and the permission set left empty.
 	p := wf.Spawn("reader", "reads files", nil, "")
 	p.Permissions = make(map[Permission]bool)
 	p.Tools = []ToolDefinition{{Name: "read"}}

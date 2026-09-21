@@ -7,7 +7,6 @@ import (
 	"testing"
 )
 
-// oneShotGen proposes a single fixed batch of calls on its first step, then stops.
 type oneShotGen struct {
 	effects []ProposedEffect
 	done    bool
@@ -21,10 +20,6 @@ func (g *oneShotGen) Generate(ctx Context) Proposal {
 	return Proposal{Text: "calling", Effects: g.effects}
 }
 
-// TestEveryBuiltinToolDispatches pins the contract the constructor must honour:
-// every built-in tool, registered the supported way, reaches its handler and
-// records an observation. It guards against a constructor that registers a tool
-// whose handler is never resolved — a shape that dispatches nil and panics.
 func TestEveryBuiltinToolDispatches(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "sample.txt"), []byte("alpha\nbeta\n"), 0o644); err != nil {
@@ -71,9 +66,6 @@ func TestEveryBuiltinToolDispatches(t *testing.T) {
 	}
 }
 
-// TestBuiltinToolsAreContextual documents why the legacy Handler field cannot be
-// the registration path: no built-in tool sets it. A constructor that reads only
-// Tool.Handler registers nil for every built-in.
 func TestBuiltinToolsAreContextual(t *testing.T) {
 	dir := t.TempDir()
 	for _, tool := range []Tool{ReadTool(dir), ReadBytesTool(dir), SearchTool(dir), ListTool(dir)} {
