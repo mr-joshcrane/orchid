@@ -3,6 +3,7 @@ package orchid
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -321,5 +322,37 @@ func TestWithSQLiteLog_Stub_ReturnsError(t *testing.T) {
 	_, err := NewWorkflowWithOptions(gen, WithSQLiteLog(t.TempDir()+"/test.db"))
 	if err == nil {
 		t.Fatal("WithSQLiteLog without sqlite build tag should return error")
+	}
+}
+
+func TestEventTypeNamesAreAligned(t *testing.T) {
+	want := map[EventType]string{
+		EventUserInput:        "UserInput",
+		EventAssistantOutput:  "AssistantOutput",
+		EventEffectIntent:     "EffectIntent",
+		EventEffectObserved:   "EffectObserved",
+		EventEffectRejected:   "EffectRejected",
+		EventProcessSpawned:   "ProcessSpawned",
+		EventOutputTruncated:  "OutputTruncated",
+		EventRootOverride:     "RootOverride",
+		EventPromptSize:       "PromptSize",
+		EventPromptPressure:   "PromptPressure",
+		EventHistoryTruncated: "HistoryTruncated",
+		EventEffectMetadata:   "EffectMetadata",
+	}
+
+	for typ, name := range want {
+		if got := typ.String(); got != name {
+			t.Errorf("EventType(%d).String() = %q, want %q", int(typ), got, name)
+		}
+	}
+
+	for i := 0; i <= int(EventEffectMetadata); i++ {
+		if got := EventType(i).String(); strings.HasPrefix(got, "EventType(") {
+			t.Errorf("EventType(%d) has no name; names slice is short", i)
+		}
+	}
+	if got := EventType(int(EventEffectMetadata) + 1).String(); !strings.HasPrefix(got, "EventType(") {
+		t.Errorf("EventType past the last constant resolved to %q; names slice has a stale entry", got)
 	}
 }

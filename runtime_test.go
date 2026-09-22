@@ -2,8 +2,10 @@ package orchid
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -15,7 +17,7 @@ func nopGenerator() Generator {
 }
 
 func TestWorkflow_Spawn(t *testing.T) {
-	wf, err := NewWorkflow(nopGenerator())
+	wf, err := NewWorkflowWithOptions(nopGenerator())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,10 +28,10 @@ func TestWorkflow_Spawn(t *testing.T) {
 		t.Fatal("spawned process not in table")
 	}
 
-	if !p.HasCapability("read") || !p.HasCapability("bash") {
-		t.Fatal("capabilities not set")
+	if !p.HasPermission(PermissionFromTool("read")) || !p.HasPermission(PermissionFromTool("bash")) {
+		t.Fatal("permissions not set from spawn grants")
 	}
-	if p.HasCapability("write") {
+	if p.HasPermission(PermissionFromTool("write")) {
 		t.Fatal("should not have write")
 	}
 
@@ -50,7 +52,7 @@ func TestWorkflow_Spawn(t *testing.T) {
 }
 
 func TestWorkflow_Spawn_ParentID(t *testing.T) {
-	wf, err := NewWorkflow(nopGenerator())
+	wf, err := NewWorkflowWithOptions(nopGenerator())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +64,7 @@ func TestWorkflow_Spawn_ParentID(t *testing.T) {
 }
 
 func TestWorkflow_Inject(t *testing.T) {
-	wf, err := NewWorkflow(nopGenerator())
+	wf, err := NewWorkflowWithOptions(nopGenerator())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,14 +88,14 @@ func TestWorkflow_Step_NoEffects(t *testing.T) {
 	gen := GeneratorFunc(func(ctx Context) Proposal {
 		return Proposal{Text: "thinking"}
 	})
-	wf, err := NewWorkflow(gen)
+	wf, err := NewWorkflowWithOptions(gen)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := wf.Spawn("thinker", "", nil, "")
 	wf.Inject(p.ID, "what?")
 
-	text, results, _ := wf.Step(context.Background(), p.ID)
+	text, results, _, _ := wf.Step(context.Background(), p.ID)
 
 	if text != "thinking" {
 		t.Fatalf("text = %q, want %q", text, "thinking")
@@ -125,14 +127,14 @@ func TestWorkflow_Step_EffectAdmittedAndExecuted(t *testing.T) {
 		},
 	}
 
-	wf, err := NewWorkflow(gen, readTool)
+	wf, err := NewWorkflowWithOptions(gen, WithTools(readTool))
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := wf.Spawn("reader", "", []Capability{"read"}, "")
 	wf.Inject(p.ID, "read it")
 
-	_, results, _ := wf.Step(context.Background(), p.ID)
+	_, results, _, _ := wf.Step(context.Background(), p.ID)
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
@@ -145,7 +147,7 @@ func TestWorkflow_Step_EffectAdmittedAndExecuted(t *testing.T) {
 	}
 }
 
-func TestWorkflow_Step_EffectRejectedByCapability(t *testing.T) {
+func TestWorkflow_Step_EffectRejectedByPermission(t *testing.T) {
 	gen := GeneratorFunc(func(ctx Context) Proposal {
 		return Proposal{
 			Text:    "want to write",
@@ -153,14 +155,14 @@ func TestWorkflow_Step_EffectRejectedByCapability(t *testing.T) {
 		}
 	})
 
-	wf, err := NewWorkflow(gen)
+	wf, err := NewWorkflowWithOptions(gen)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := wf.Spawn("reader", "", []Capability{"read"}, "")
 	wf.Inject(p.ID, "go")
 
-	_, results, _ := wf.Step(context.Background(), p.ID)
+	_, results, _, _ := wf.Step(context.Background(), p.ID)
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
@@ -186,7 +188,7 @@ func TestWorkflow_Step_EffectRejectedByPolicy(t *testing.T) {
 		Handler: func(args map[string]string) (string, error) { return "data", nil },
 	}
 
-	wf, err := NewWorkflow(gen, readTool)
+	wf, err := NewWorkflowWithOptions(gen, WithTools(readTool))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +199,7 @@ func TestWorkflow_Step_EffectRejectedByPolicy(t *testing.T) {
 	p := wf.Spawn("reader", "", []Capability{"read"}, "")
 	wf.Inject(p.ID, "go")
 
-	_, results, _ := wf.Step(context.Background(), p.ID)
+	_, results, _, _ := wf.Step(context.Background(), p.ID)
 
 	if results[0].Admitted {
 		t.Fatal("policy should reject")
@@ -215,17 +217,17 @@ func TestWorkflow_Step_NoHandler(t *testing.T) {
 		}
 	})
 
-	wf, err := NewWorkflow(gen)
+	wf, err := NewWorkflowWithOptions(gen)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := wf.Spawn("test", "", []Capability{"unknown"}, "")
 	wf.Inject(p.ID, "go")
 
-	_, results, _ := wf.Step(context.Background(), p.ID)
+	_, results, _, _ := wf.Step(context.Background(), p.ID)
 
 	if !results[0].Admitted {
-		t.Fatal("should be admitted (has capability)")
+		t.Fatal("should be admitted (has the permission)")
 	}
 	if results[0].Error == "" {
 		t.Fatal("should error with no handler")
@@ -245,7 +247,7 @@ func TestWorkflow_Step_EffectEventsMinimal(t *testing.T) {
 		Handler: func(args map[string]string) (string, error) { return "data", nil },
 	}
 
-	wf, err := NewWorkflow(gen, readTool)
+	wf, err := NewWorkflowWithOptions(gen, WithTools(readTool))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,18 +278,99 @@ func TestWorkflow_Step_EffectEventsMinimal(t *testing.T) {
 }
 
 func TestWorkflow_Step_MissingProcess(t *testing.T) {
-	wf, err := NewWorkflow(nopGenerator())
+	wf, err := NewWorkflowWithOptions(nopGenerator())
 	if err != nil {
 		t.Fatal(err)
 	}
-	text, results, _ := wf.Step(context.Background(), "nonexistent")
+	text, results, _, stepErr := wf.Step(context.Background(), "nonexistent")
 
 	if text != "" || results != nil {
 		t.Fatal("step on missing process should return empty")
 	}
+	if !errors.Is(stepErr, ErrProcessNotFound) {
+		t.Fatalf("err = %v, want ErrProcessNotFound", stepErr)
+	}
 }
 
-func TestWorkflow_Step_SameEffectNotExecutedTwice(t *testing.T) {
+func TestWorkflow_Step_PropagatesGeneratorError(t *testing.T) {
+	boom := errors.New("model refused")
+	gen := GeneratorFunc(func(ctx Context) Proposal {
+		return Proposal{Err: boom}
+	})
+
+	wf, err := NewWorkflowWithOptions(gen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := wf.Spawn("worker", "", nil, "")
+	wf.Inject(p.ID, "go")
+
+	text, results, usage, stepErr := wf.Step(context.Background(), p.ID)
+
+	if !errors.Is(stepErr, boom) {
+		t.Fatalf("err = %v, want the generator's error", stepErr)
+	}
+	if text != "" || results != nil || usage != (TokenUsage{}) {
+		t.Errorf("a failed turn should report nothing: %q %v %+v", text, results, usage)
+	}
+	if p.State != ProcessFailed {
+		t.Errorf("state = %d, want ProcessFailed", p.State)
+	}
+}
+
+func TestWorkflow_Step_PropagatesFatalEffectError(t *testing.T) {
+	gen := GeneratorFunc(func(ctx Context) Proposal {
+		return Proposal{
+			Text:    "trying",
+			Effects: []ProposedEffect{{Tool: "boom", Args: map[string]string{}}},
+		}
+	})
+	boomTool := Tool{
+		Name: "boom", Description: "fails fatally",
+		Handler: func(map[string]string) (string, error) {
+			return "", fmt.Errorf("unrecoverable: %w", ErrEffectFatal)
+		},
+	}
+
+	wf, err := NewWorkflowWithOptions(gen, WithTools(boomTool))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := wf.Spawn("worker", "", []Capability{"boom"}, "")
+	wf.Inject(p.ID, "go")
+
+	text, results, _, stepErr := wf.Step(context.Background(), p.ID)
+
+	if !errors.Is(stepErr, ErrEffectFatal) {
+		t.Fatalf("err = %v, want ErrEffectFatal", stepErr)
+	}
+	if text != "trying" {
+		t.Errorf("text = %q, want the turn's text", text)
+	}
+	if len(results) != 1 {
+		t.Fatalf("want 1 result so the call stays answered, got %d", len(results))
+	}
+	if p.State != ProcessFailed {
+		t.Errorf("state = %d, want ProcessFailed", p.State)
+	}
+}
+
+func TestStepUntilDone_ReturnsGeneratorError(t *testing.T) {
+	boom := errors.New("model refused")
+	gen := GeneratorFunc(func(ctx Context) Proposal {
+		return Proposal{Err: boom}
+	})
+
+	wf, err := NewWorkflowWithOptions(gen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, runErr := wf.Run(context.Background(), "p", "go"); !errors.Is(runErr, boom) {
+		t.Fatalf("Run err = %v, want the generator's error", runErr)
+	}
+}
+
+func TestWorkflow_Step_OneCallRunsExactlyOnce(t *testing.T) {
 	callCount := 0
 	gen := GeneratorFunc(func(ctx Context) Proposal {
 		return Proposal{
@@ -306,7 +389,7 @@ func TestWorkflow_Step_SameEffectNotExecutedTwice(t *testing.T) {
 		},
 	}
 
-	wf, err := NewWorkflow(gen, bashTool)
+	wf, err := NewWorkflowWithOptions(gen, WithTools(bashTool))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +421,7 @@ func TestWorkflow_StepUntilDone_MultiStep(t *testing.T) {
 		Handler: func(args map[string]string) (string, error) { return "data", nil },
 	}
 
-	wf, err := NewWorkflow(gen, readTool)
+	wf, err := NewWorkflowWithOptions(gen, WithTools(readTool))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +457,7 @@ func TestWorkflow_StepUntilDone_MaxStepsCap(t *testing.T) {
 		Handler: func(args map[string]string) (string, error) { return "data", nil },
 	}
 
-	wf, err := NewWorkflow(gen, readTool)
+	wf, err := NewWorkflowWithOptions(gen, WithTools(readTool))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +489,7 @@ func TestWorkflow_StepUntilDone_CallbackInjects(t *testing.T) {
 		Handler: func(args map[string]string) (string, error) { return "data", nil },
 	}
 
-	wf, err := NewWorkflow(gen, readTool)
+	wf, err := NewWorkflowWithOptions(gen, WithTools(readTool))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,7 +522,7 @@ func TestWorkflow_StepUntilDone_CallbackStops(t *testing.T) {
 		Handler: func(args map[string]string) (string, error) { return "data", nil },
 	}
 
-	wf, err := NewWorkflow(gen, readTool)
+	wf, err := NewWorkflowWithOptions(gen, WithTools(readTool))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +561,7 @@ func TestWorkflow_StepUntilDone_NilCallback(t *testing.T) {
 		Handler: func(args map[string]string) (string, error) { return "data", nil },
 	}
 
-	wf, err := NewWorkflow(gen, readTool)
+	wf, err := NewWorkflowWithOptions(gen, WithTools(readTool))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -500,7 +583,7 @@ func TestEvent_AssistantOutput_ContainsTokens(t *testing.T) {
 		return Proposal{Text: "hello", InputTokens: 100, OutputTokens: 25}
 	})
 
-	wf, err := NewWorkflow(gen)
+	wf, err := NewWorkflowWithOptions(gen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -539,7 +622,7 @@ func TestEvent_EffectObserved_ContainsDuration(t *testing.T) {
 		},
 	}
 
-	wf, err := NewWorkflow(gen, readTool)
+	wf, err := NewWorkflowWithOptions(gen, WithTools(readTool))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -568,7 +651,7 @@ func TestProcess_Usage_AccumulatesAcrossSteps(t *testing.T) {
 		return Proposal{Text: "ok", InputTokens: 100, OutputTokens: 20}
 	})
 
-	wf, err := NewWorkflow(gen)
+	wf, err := NewWorkflowWithOptions(gen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -592,7 +675,7 @@ func TestProcess_Usage_IndependentPerProcess(t *testing.T) {
 		return Proposal{Text: "ok", InputTokens: 50, OutputTokens: 10}
 	})
 
-	wf, err := NewWorkflow(gen)
+	wf, err := NewWorkflowWithOptions(gen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -636,7 +719,7 @@ func TestWorkflow_Run(t *testing.T) {
 		},
 	}
 
-	wf, err := NewWorkflow(gen, readTool)
+	wf, err := NewWorkflowWithOptions(gen, WithTools(readTool))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -681,7 +764,7 @@ func TestNewWorkflowOptions(t *testing.T) {
 	})
 
 	t.Run("legacy variadic form still works", func(t *testing.T) {
-		wf, err := NewWorkflow(gen, readTool)
+		wf, err := NewWorkflowWithOptions(gen, WithTools(readTool))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -730,12 +813,41 @@ func TestNewWorkflowOptions(t *testing.T) {
 		}
 	})
 
-	t.Run("WithTools panics on misconfigured tool", func(t *testing.T) {
+	t.Run("WithTools reports a misconfigured tool as an error", func(t *testing.T) {
 		defer func() {
-			if r := recover(); r == nil {
-				t.Fatal("expected panic for tool with no handler")
+			if r := recover(); r != nil {
+				t.Fatalf("a misconfigured tool must not panic, got %v", r)
 			}
 		}()
-		_, _ = NewWorkflowWithOptions(gen, WithTools(Tool{Name: "bad"}))
+
+		wf, err := NewWorkflowWithOptions(gen, WithTools(Tool{Name: "bad"}))
+		if err == nil {
+			t.Fatal("expected an error for a tool with no handler")
+		}
+		if wf != nil {
+			t.Error("expected a nil workflow alongside the error")
+		}
+		if !strings.Contains(err.Error(), "bad") {
+			t.Errorf("error should name the offending tool, got %q", err)
+		}
+	})
+
+	t.Run("WithTools reports every misconfigured tool", func(t *testing.T) {
+		_, err := NewWorkflowWithOptions(gen, WithTools(
+			Tool{Name: "no-handler"},
+			Tool{
+				Name:              "two-handlers",
+				Handler:           func(map[string]string) (string, error) { return "", nil },
+				ContextualHandler: func(HandlerContext, map[string]string) (string, error) { return "", nil },
+			},
+		))
+		if err == nil {
+			t.Fatal("expected an error")
+		}
+		for _, want := range []string{"no-handler", "two-handlers"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error should name %q, got %q", want, err)
+			}
+		}
 	})
 }

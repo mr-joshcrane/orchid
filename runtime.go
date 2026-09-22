@@ -2,10 +2,8 @@ package orchid
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -40,6 +38,9 @@ type Workflow struct {
 
 var ErrEffectFatal = errors.New("orchid: fatal effect error")
 
+// ErrProcessNotFound is returned by Step for an unknown process id.
+var ErrProcessNotFound = errors.New("orchid: process not found")
+
 func (w *Workflow) isParallelizable(toolName string) bool {
 	for i := range w.tools {
 		if w.tools[i].Name == toolName {
@@ -49,11 +50,7 @@ func (w *Workflow) isParallelizable(toolName string) bool {
 	return false
 }
 
-// dispatchParallel runs planned effects, batching consecutive parallelizable
-// ones. A non-parallelizable effect drains the current batch first. Results
-// keep model order regardless of completion order, and an effect that never
-// ran carries an explicit error rather than a zero value, so the derived
-// transcript answers every tool call.
+// dispatchParallel batches consecutive parallelizable effects, preserving model order.
 func (w *Workflow) dispatchParallel(ctx context.Context, p *Process, planned []plannedEffect) ([]EffectResult, error) {
 	results := make([]EffectResult, len(planned))
 	done := make([]bool, len(planned))
@@ -104,9 +101,7 @@ func (w *Workflow) dispatchParallel(ctx context.Context, p *Process, planned []p
 	return w.completeUnrun(p, planned, results, done), fatalErr
 }
 
-// dispatch runs every planned effect and returns one result per call in model
-// order. Both paths answer every call, including calls abandoned after a fatal
-// effect, so the derived transcript never holds an unanswered tool call.
+// dispatch runs every planned effect, one result per call, in model order.
 func (w *Workflow) dispatch(ctx context.Context, p *Process, planned []plannedEffect) ([]EffectResult, error) {
 	if w.concurrency <= 1 {
 		return w.dispatchSequential(ctx, p, planned)
@@ -128,10 +123,7 @@ func (w *Workflow) dispatchSequential(ctx context.Context, p *Process, planned [
 	return results, nil
 }
 
-// completeUnrun records a rejection for every planned effect that never
-// produced a result, so an abandoned dispatch cannot leave a tool call
-// unanswered. done, rather than a zero-value result, marks what ran: an effect
-// may legitimately carry an empty tool name and still have been rejected.
+// completeUnrun records a rejection for every planned effect that never ran.
 func (w *Workflow) completeUnrun(
 	p *Process, planned []plannedEffect, results []EffectResult, done []bool,
 ) []EffectResult {
@@ -146,11 +138,13 @@ func (w *Workflow) completeUnrun(
 
 type WorkflowOption func(*Workflow)
 
+// WithTools registers tools. A tool without exactly one handler is a config error.
 func WithTools(tools ...Tool) WorkflowOption {
 	return func(w *Workflow) {
 		for _, t := range tools {
 			if err := w.Effects.RegisterTool(t); err != nil {
-				panic(err.Error())
+				w.configErr = errors.Join(w.configErr, fmt.Errorf("orchid: WithTools: %w", err))
+				continue
 			}
 			w.tools = append(w.tools, t)
 		}
@@ -221,21 +215,6 @@ func WithEffectConcurrency(n int) WorkflowOption {
 	}
 }
 
-func NewWorkflow(gen Generator, tools ...Tool) (*Workflow, error) {
-	wf := &Workflow{
-		Log:         NewEventLog(),
-		Processes:   NewProcessTable(),
-		Effects:     NewEffectTable(),
-		gen:         gen,
-		tools:       tools,
-		permBundles: newPermissionBundleRegistry(),
-	}
-	for _, t := range tools {
-		wf.Effects.RegisterHandler(t.Name, t.Handler)
-	}
-	return wf, nil
-}
-
 func NewWorkflowWithOptions(gen Generator, opts ...WorkflowOption) (*Workflow, error) {
 	wf := &Workflow{
 		Log:         NewEventLog(),
@@ -284,75 +263,6 @@ func (w *Workflow) Close() error {
 	return errors.Join(errs...)
 }
 
-type sessionData struct {
-	Events    []Event          `json:"events"`
-	Processes []sessionProcess `json:"processes"`
-}
-
-type sessionProcess struct {
-	ID       string           `json:"id"`
-	Name     string           `json:"name"`
-	Purpose  string           `json:"purpose"`
-	State    ProcessState     `json:"state"`
-	ParentID string           `json:"parent_id"`
-	Usage    TokenUsage       `json:"usage"`
-	Tools    []ToolDefinition `json:"tools"`
-}
-
-// SaveSession writes the events and process table. Conversation history is not
-// stored: it derives from the events, so a restored session reconstructs the
-// exact transcript, including tool results for calls that had already run.
-func (w *Workflow) SaveSession(wr io.Writer) error {
-	data := sessionData{
-		Events: w.Log.All(),
-	}
-	for _, p := range w.Processes.All() {
-		data.Processes = append(data.Processes, sessionProcess{
-			ID:       p.ID,
-			Name:     p.Name,
-			Purpose:  p.Purpose,
-			State:    p.State,
-			ParentID: p.ParentID,
-			Usage:    p.Usage,
-			Tools:    p.Tools,
-		})
-	}
-	return json.NewEncoder(wr).Encode(data)
-}
-
-func (w *Workflow) LoadSession(r io.Reader) error {
-	var data sessionData
-	if err := json.NewDecoder(r).Decode(&data); err != nil {
-		return fmt.Errorf("decoding session: %w", err)
-	}
-	for _, e := range data.Events {
-		w.Log.Append(e)
-	}
-	for _, sp := range data.Processes {
-		p := &Process{
-			ID:           sp.ID,
-			Name:         sp.Name,
-			Purpose:      sp.Purpose,
-			State:        sp.State,
-			ParentID:     sp.ParentID,
-			Capabilities: make(map[Capability]bool),
-			Permissions:  make(map[Permission]bool),
-			Usage:        sp.Usage,
-			Tools:        sp.Tools,
-			View: LogView{
-				Source: w.Log,
-				Filter: func(e Event) bool { return e.ProcessID == sp.ID },
-			},
-		}
-		for _, td := range sp.Tools {
-			p.Capabilities[Capability(td.Name)] = true
-			p.Permissions[PermissionFromTool(ToolName(td.Name))] = true
-		}
-		w.Processes.Add(p)
-	}
-	return nil
-}
-
 // Use appends workflow-global middleware applied to every tool at dispatch time.
 // Panics if called after Run has started.
 func (w *Workflow) Use(mw ...ToolMiddleware) {
@@ -389,11 +299,10 @@ func (w *Workflow) newEffectID() string {
 
 func (w *Workflow) Spawn(name, purpose string, caps []Capability, parentID string) *Process {
 	p := &Process{
-		ID:           w.newProcessID(),
-		Name:         name,
-		Purpose:      purpose,
-		Capabilities: make(map[Capability]bool),
-		Permissions:  make(map[Permission]bool),
+		ID:          w.newProcessID(),
+		Name:        name,
+		Purpose:     purpose,
+		Permissions: make(map[Permission]bool),
 		View: LogView{
 			Source:   w.Log,
 			StartCut: uint64(w.Log.Len()),
@@ -402,8 +311,7 @@ func (w *Workflow) Spawn(name, purpose string, caps []Capability, parentID strin
 		ParentID: parentID,
 	}
 	for _, c := range caps {
-		p.Capabilities[c] = true
-		p.Permissions[PermissionFromTool(ToolName(c))] = true
+		p.Permissions[PermissionFromTool(c)] = true
 	}
 
 	w.Processes.Add(p)
@@ -427,10 +335,11 @@ func (w *Workflow) Inject(processID string, input string) {
 	})
 }
 
-func (w *Workflow) Step(ctx context.Context, processID string) (string, []EffectResult, TokenUsage) {
+// Step advances one process by a single turn.
+func (w *Workflow) Step(ctx context.Context, processID string) (string, []EffectResult, TokenUsage, error) {
 	p := w.Processes.Get(processID)
 	if p == nil {
-		return "", nil, TokenUsage{}
+		return "", nil, TokenUsage{}, fmt.Errorf("%w: %s", ErrProcessNotFound, processID)
 	}
 	p.State = ProcessRunning
 
@@ -452,7 +361,7 @@ func (w *Workflow) Step(ctx context.Context, processID string) (string, []Effect
 	if proposal.Err != nil {
 		p.State = ProcessFailed
 		p.Err = proposal.Err
-		return "", nil, TokenUsage{}
+		return "", nil, TokenUsage{}, proposal.Err
 	}
 
 	p.Usage.InputTokens += proposal.InputTokens
@@ -478,14 +387,16 @@ func (w *Workflow) Step(ctx context.Context, processID string) (string, []Effect
 	planned := w.planEffects(p, proposal.Effects)
 	results, fatalErr := w.dispatch(ctx, p, planned)
 
+	usage := TokenUsage{InputTokens: proposal.InputTokens, OutputTokens: proposal.OutputTokens}
+
 	if fatalErr != nil {
 		p.State = ProcessFailed
 		p.Err = fatalErr
-		return proposal.Text, results, TokenUsage{InputTokens: proposal.InputTokens, OutputTokens: proposal.OutputTokens}
+		return proposal.Text, results, usage, fatalErr
 	}
 
 	p.State = ProcessWaiting
-	return proposal.Text, results, TokenUsage{InputTokens: proposal.InputTokens, OutputTokens: proposal.OutputTokens}
+	return proposal.Text, results, usage, nil
 }
 
 func (w *Workflow) emitPromptTelemetry(gen Generator, orchidCtx Context, processID string) {
@@ -508,14 +419,19 @@ func (w *Workflow) emitPromptTelemetry(gen Generator, orchidCtx Context, process
 		utilisation = est * 100 / limit
 	}
 
+	data := map[string]string{
+		"estimated_tokens": strconv.Itoa(est),
+		"model_limit":      strconv.Itoa(limit),
+		"utilisation_pct":  strconv.Itoa(utilisation),
+	}
+	if limit == 0 {
+		data["model_limit_unknown"] = "true"
+	}
+
 	w.Log.Append(Event{
 		Type:      EventPromptSize,
 		ProcessID: processID,
-		Data: map[string]string{
-			"estimated_tokens": strconv.Itoa(est),
-			"model_limit":      strconv.Itoa(limit),
-			"utilisation_pct":  strconv.Itoa(utilisation),
-		},
+		Data:      data,
 	})
 
 	if limit > 0 && est > limit*95/100 {
@@ -563,14 +479,13 @@ func (w *Workflow) StepUntilDone(ctx context.Context, processID string, c Constr
 	}
 
 	for step := 0; step < maxSteps; step++ {
-		text, results, usage := w.Step(ctx, processID)
+		text, results, usage, err := w.Step(ctx, processID)
 		totalUsage.InputTokens += usage.InputTokens
 		totalUsage.OutputTokens += usage.OutputTokens
 		lastText = text
 
-		p := w.Processes.Get(processID)
-		if p != nil && p.Err != nil {
-			return "", totalUsage, p.Err
+		if err != nil {
+			return "", totalUsage, err
 		}
 
 		if c.MaxTokens > 0 && totalUsage.InputTokens+totalUsage.OutputTokens >= c.MaxTokens {
@@ -590,10 +505,13 @@ func (w *Workflow) StepUntilDone(ctx context.Context, processID string, c Constr
 			w.Inject(processID, inject)
 		}
 		if stop {
-			text, _, usage = w.Step(ctx, processID)
+			text, _, usage, err = w.Step(ctx, processID)
 			totalUsage.InputTokens += usage.InputTokens
 			totalUsage.OutputTokens += usage.OutputTokens
 			lastText = text
+			if err != nil {
+				return "", totalUsage, err
+			}
 			break
 		}
 	}
@@ -629,7 +547,9 @@ func (w *Workflow) Run(ctx context.Context, purpose string, task string, opts ..
 	return w.StepUntilDone(ctx, p.ID, c, nil)
 }
 
-func MustRun(ctx context.Context, gen Generator, purpose, task string, opts ...WorkflowOption) (string, TokenUsage, error) {
+// MustRun builds a workflow, runs it, and always closes it.
+// Returns are named so the deferred Close error reaches the caller.
+func MustRun(ctx context.Context, gen Generator, purpose, task string, opts ...WorkflowOption) (text string, usage TokenUsage, err error) {
 	wf, err := NewWorkflowWithOptions(gen, opts...)
 	if err != nil {
 		return "", TokenUsage{}, err
@@ -637,8 +557,7 @@ func MustRun(ctx context.Context, gen Generator, purpose, task string, opts ...W
 	defer func() {
 		err = errors.Join(err, wf.Close())
 	}()
-	text, usage, runErr := wf.Run(ctx, purpose, task)
-	return text, usage, runErr
+	return wf.Run(ctx, purpose, task)
 }
 
 type EffectResult struct {
@@ -655,10 +574,7 @@ type plannedEffect struct {
 	effect   *Effect
 }
 
-// planEffects assigns ids and logs one intent per call in model order, before
-// any dispatch. Logging intents up front is what lets DeriveMessages rebuild
-// the assistant message in the order the model proposed it, independent of the
-// order parallel dispatch happens to complete in.
+// planEffects assigns ids and logs one intent per call, in model order, before dispatch.
 func (w *Workflow) planEffects(p *Process, proposed []ProposedEffect) []plannedEffect {
 	planned := make([]plannedEffect, len(proposed))
 	for i, pe := range proposed {
@@ -686,9 +602,7 @@ func (w *Workflow) planEffects(p *Process, proposed []ProposedEffect) []plannedE
 	return planned
 }
 
-// intentData records a call's identity and arguments. Arguments are namespaced
-// under ArgPrefix so an argument named "tool" or "effect_id" cannot overwrite
-// the event's own metadata.
+// intentData records a call's identity and arguments, the latter under ArgPrefix.
 func intentData(pe ProposedEffect, effectID string) map[string]string {
 	data := map[string]string{
 		KeyTool:      pe.Tool,
@@ -715,26 +629,18 @@ func (w *Workflow) invokeHandler(ctx context.Context, p *Process, pl plannedEffe
 	return applyMiddleware(w.handlerFor(pe.Tool), w.middleware)(hctx, pe.Args)
 }
 
-// handlerFor resolves a tool's handler, preferring a contextual registration
-// and adapting a legacy one. Callers check hasHandler first.
+// handlerFor resolves a tool's registered handler. Callers check hasHandler first.
 func (w *Workflow) handlerFor(tool string) ContextualEffectHandler {
-	if ch, ok := w.Effects.GetContextualHandler(tool); ok {
-		return ch
-	}
-	h, _ := w.Effects.GetHandler(tool)
-	return adaptLegacyHandler(h)
+	h, _ := w.Effects.GetContextualHandler(tool)
+	return h
 }
 
 func (w *Workflow) hasHandler(tool string) bool {
-	if _, ok := w.Effects.GetContextualHandler(tool); ok {
-		return true
-	}
-	_, ok := w.Effects.GetHandler(tool)
+	_, ok := w.Effects.GetContextualHandler(tool)
 	return ok
 }
 
-// logObserved records a completed call's result. Every answered call gets one,
-// including a cache hit, so the derived transcript answers every tool call.
+// logObserved records a completed call's result.
 func (w *Workflow) logObserved(p *Process, pl plannedEffect, result string, duration time.Duration) {
 	w.Log.Append(Event{
 		Type:      EventEffectObserved,
@@ -750,9 +656,7 @@ func (w *Workflow) logObserved(p *Process, pl plannedEffect, result string, dura
 }
 
 // rejectEffect records a refusal and returns the error result the model sees.
-// admitted distinguishes a call refused before admission (permission, policy)
-// from one that was admitted and then failed (bad arguments, missing handler,
-// handler error).
+// admitted separates a pre-admission refusal from a post-admission failure.
 func (w *Workflow) rejectEffect(
 	p *Process, pl plannedEffect, reason string, admitted bool, duration time.Duration,
 ) (EffectResult, error) {
@@ -777,30 +681,7 @@ func (w *Workflow) rejectEffect(
 	}, nil
 }
 
-// cachedResult returns a previously observed result for an identical call.
-func (w *Workflow) cachedResult(p *Process, pe ProposedEffect) (EffectResult, bool) {
-	p.cacheMu.Lock()
-	defer p.cacheMu.Unlock()
-	cached, ok := p.EffectCache[effectCacheKey(pe)]
-	if !ok {
-		return EffectResult{}, false
-	}
-	cached.ToolUseID = pe.ToolUseID
-	return cached, true
-}
-
-func (w *Workflow) storeResult(p *Process, pe ProposedEffect, result EffectResult) {
-	p.cacheMu.Lock()
-	defer p.cacheMu.Unlock()
-	if p.EffectCache == nil {
-		p.EffectCache = make(map[string]EffectResult)
-	}
-	p.EffectCache[effectCacheKey(pe)] = result
-}
-
-// validateEffectArgs checks the call against its tool's declared parameters,
-// returning a refusal reason or the empty string. A call for an unregistered
-// tool validates trivially; the missing-handler check refuses it.
+// validateEffectArgs returns a refusal reason for a call that does not match its tool's params.
 func (w *Workflow) validateEffectArgs(pe ProposedEffect) string {
 	for i := range w.tools {
 		if w.tools[i].Name == pe.Tool {
@@ -810,18 +691,10 @@ func (w *Workflow) validateEffectArgs(pe ProposedEffect) string {
 	return ""
 }
 
-// processEffect admits, dispatches, and observes one planned call. Its intent is
-// already logged; every exit records an observation or a rejection, so the
-// derived transcript answers the call.
+// processEffect admits, dispatches, and observes one planned call.
 func (w *Workflow) processEffect(ctx context.Context, p *Process, pl plannedEffect) (EffectResult, error) {
 	pe := pl.proposed
 	eff := pl.effect
-
-	if cached, ok := w.cachedResult(p, pe); ok {
-		w.logObserved(p, pl, cached.Result, 0)
-		eff.State = EffectApplied
-		return cached, nil
-	}
 
 	if !w.hasToolPermission(p, ToolName(pe.Tool)) {
 		return w.rejectEffect(p, pl, fmt.Sprintf("process lacks permission: tool:%s", pe.Tool), false, 0)
@@ -856,14 +729,12 @@ func (w *Workflow) processEffect(ctx context.Context, p *Process, pl plannedEffe
 	w.logObserved(p, pl, handlerResult, duration)
 	eff.State = EffectApplied
 
-	result := EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: true, Result: handlerResult}
-	w.storeResult(p, pe, result)
-	return result, nil
+	return EffectResult{Tool: pe.Tool, ToolUseID: pe.ToolUseID, Admitted: true, Result: handlerResult}, nil
 }
 
+// hasToolPermission reports whether a direct grant or a permission bundle covers the tool.
 func (w *Workflow) hasToolPermission(p *Process, tool ToolName) bool {
-	toolPerm := PermissionFromTool(tool)
-	if p.HasPermission(toolPerm) {
+	if p.HasPermission(PermissionFromTool(tool)) {
 		return true
 	}
 	for perm := range p.Permissions {
@@ -871,28 +742,7 @@ func (w *Workflow) hasToolPermission(p *Process, tool ToolName) bool {
 			return true
 		}
 	}
-	if p.HasCapability(Capability(tool)) {
-		w.Log.Append(Event{
-			Type:      EventPermissionFallback,
-			ProcessID: p.ID,
-			Data:      map[string]string{"tool": string(tool)},
-		})
-		return true
-	}
 	return false
-}
-
-func effectCacheKey(pe ProposedEffect) string {
-	keys := make([]string, 0, len(pe.Args))
-	for k := range pe.Args {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var parts []string
-	for _, k := range keys {
-		parts = append(parts, k+"="+pe.Args[k])
-	}
-	return pe.Tool + ":" + strings.Join(parts, "&")
 }
 
 func validateArgs(params map[string]Param, args map[string]string) string {

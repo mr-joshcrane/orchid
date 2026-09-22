@@ -13,11 +13,13 @@ type Tool struct {
 	Description string
 	Params      map[string]Param
 
-	// Deprecated: prefer ContextualHandler or RichHandler for new tools.
+	// Handler is the simplest shape: arguments in, result out.
 	Handler EffectHandler
 
+	// ContextualHandler also receives HandlerContext, carrying RootDir and LogAppend.
 	ContextualHandler ContextualEffectHandler
 
+	// RichHandler returns a Result, carrying metadata into the audit log.
 	RichHandler RichEffectHandler
 
 	// Parallelizable marks the tool safe for concurrent execution.
@@ -34,7 +36,7 @@ func (t Tool) With(mw ...ToolMiddleware) Tool {
 	case t.ContextualHandler != nil:
 		base = t.ContextualHandler
 	default:
-		base = adaptLegacyHandler(t.Handler)
+		base = adaptPlainHandler(t.Handler)
 	}
 	t.ContextualHandler = applyMiddleware(base, mw)
 	t.Handler = nil

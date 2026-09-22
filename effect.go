@@ -69,11 +69,11 @@ type RichEffectHandler func(hctx HandlerContext, args map[string]string) (Result
 // EffectPolicy decides whether an effect should be admitted.
 type EffectPolicy func(process *Process, effect *Effect) (bool, string)
 
-// EffectTable manages the lifecycle of all effects.
+// EffectTable manages the lifecycle of all effects. RegisterTool is the only
+// handler registration path; it normalises every shape to a ContextualEffectHandler.
 type EffectTable struct {
 	mu                 sync.RWMutex
 	effects            map[string]*Effect
-	handlers           map[string]EffectHandler
 	contextualHandlers map[string]ContextualEffectHandler
 	policies           []EffectPolicy
 }
@@ -81,17 +81,11 @@ type EffectTable struct {
 func NewEffectTable() *EffectTable {
 	return &EffectTable{
 		effects:            make(map[string]*Effect),
-		handlers:           make(map[string]EffectHandler),
 		contextualHandlers: make(map[string]ContextualEffectHandler),
 	}
 }
 
-func (et *EffectTable) RegisterHandler(tool string, handler EffectHandler) {
-	et.mu.Lock()
-	defer et.mu.Unlock()
-	et.handlers[tool] = handler
-}
-
+// RegisterTool registers a tool's handler, erroring unless exactly one shape is set.
 func (et *EffectTable) RegisterTool(tool Tool) error {
 	handlerCount := 0
 	if tool.Handler != nil {
@@ -118,7 +112,7 @@ func (et *EffectTable) RegisterTool(tool Tool) error {
 	case tool.ContextualHandler != nil:
 		handler = tool.ContextualHandler
 	default:
-		handler = adaptLegacyHandler(tool.Handler)
+		handler = adaptPlainHandler(tool.Handler)
 	}
 	et.contextualHandlers[tool.Name] = handler
 	return nil
@@ -158,11 +152,4 @@ func (et *EffectTable) CheckPolicies(process *Process, effect *Effect) (bool, st
 		}
 	}
 	return true, ""
-}
-
-func (et *EffectTable) GetHandler(tool string) (EffectHandler, bool) {
-	et.mu.RLock()
-	defer et.mu.RUnlock()
-	h, ok := et.handlers[tool]
-	return h, ok
 }

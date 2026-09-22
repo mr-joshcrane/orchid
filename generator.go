@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type TokenUsage struct {
@@ -72,32 +73,59 @@ type ModelLimiter interface {
 	ModelLimit() int
 }
 
+// modelLimits maps a model id to its context window in tokens. It is a seed, not
+// an authority — prefer BedrockWithContextLimit or OpenAIWithContextLimit.
+// Prefix matching covers Bedrock's cross-region spellings and version suffixes.
 var modelLimits = map[string]int{
-	"anthropic.claude-3-5-sonnet-20241022-v2:0": 200000,
-	"anthropic.claude-3-5-haiku-20241022-v1:0":  200000,
-	"anthropic.claude-3-sonnet-20240229-v1:0":   200000,
-	"anthropic.claude-3-haiku-20240307-v1:0":    200000,
-	"anthropic.claude-v2":                       100000,
-	"gpt-4":                                     128000,
-	"gpt-4-turbo":                               128000,
-	"gpt-4o":                                    128000,
-	"gpt-3.5-turbo":                             16385,
+	// Anthropic, first-party ids.
+	"claude-fable-5-1":  1_000_000,
+	"claude-fable-5":    1_000_000,
+	"claude-mythos-5-1": 1_000_000,
+	"claude-opus-5":     1_000_000,
+	"claude-opus-4-8":   1_000_000,
+	"claude-opus-4-7":   1_000_000,
+	"claude-opus-4-6":   1_000_000,
+	"claude-sonnet-5":   1_000_000,
+	"claude-sonnet-4-6": 1_000_000,
+	"claude-haiku-4-5":  200_000,
+
+	// Anthropic on Bedrock.
+	"anthropic.claude-fable-5-1":  1_000_000,
+	"anthropic.claude-fable-5":    1_000_000,
+	"anthropic.claude-opus-5":     1_000_000,
+	"anthropic.claude-opus-4-8":   1_000_000,
+	"anthropic.claude-opus-4-7":   1_000_000,
+	"anthropic.claude-opus-4-6":   1_000_000,
+	"anthropic.claude-sonnet-5":   1_000_000,
+	"anthropic.claude-sonnet-4-6": 1_000_000,
+	"anthropic.claude-haiku-4-5":  200_000,
+
+	// OpenAI-compatible endpoints.
+	"gpt-4":         128_000,
+	"gpt-4-turbo":   128_000,
+	"gpt-4o":        128_000,
+	"gpt-3.5-turbo": 16_385,
 }
 
+// RegisterModelLimit records a context window for a model id or prefix.
 func RegisterModelLimit(model string, limit int) {
 	modelLimits[model] = limit
 }
 
+// lookupModelLimit resolves a model's context window, or 0 if unknown.
+// An exact id wins, then the longest matching prefix.
 func lookupModelLimit(model string) int {
 	if limit, ok := modelLimits[model]; ok {
 		return limit
 	}
+	best, bestLen := 0, 0
 	for prefix, limit := range modelLimits {
-		if len(model) > len(prefix) && model[:len(prefix)] == prefix {
-			return limit
+		if len(prefix) <= bestLen || !strings.HasPrefix(model, prefix) {
+			continue
 		}
+		best, bestLen = limit, len(prefix)
 	}
-	return 0
+	return best
 }
 
 func defaultEstimateTokens(ctx Context) int {

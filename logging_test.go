@@ -112,7 +112,7 @@ func TestCloseFlushesAudit(t *testing.T) {
 }
 
 func TestCloseWithoutLogDirIsNoop(t *testing.T) {
-	wf, err := NewWorkflow(nopGenerator())
+	wf, err := NewWorkflowWithOptions(nopGenerator())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,6 +145,20 @@ func TestMustRunAlwaysCloses(t *testing.T) {
 	}
 	if !hasAudit {
 		t.Fatal("MustRun should have closed and created audit.txt")
+	}
+}
+
+func TestMustRunPropagatesCloseError(t *testing.T) {
+	logDir := filepath.Join(t.TempDir(), "logs")
+
+	gen := GeneratorFunc(func(ctx Context) Proposal {
+		_ = os.RemoveAll(logDir)
+		return Proposal{Text: "done"}
+	})
+
+	_, _, err := MustRun(context.Background(), gen, "test", "go", WithLogDir(logDir))
+	if err == nil {
+		t.Fatal("expected the Close failure to propagate through MustRun")
 	}
 }
 

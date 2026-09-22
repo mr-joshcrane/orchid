@@ -320,3 +320,30 @@ func findToolUse(m Message) *ToolUse {
 	}
 	return nil
 }
+
+func assertToolCallsAnswered(t *testing.T, messages []Message) {
+	t.Helper()
+	answered := make(map[string]bool)
+	for _, m := range messages {
+		for _, b := range m.Content {
+			if b.ToolUse != nil {
+				answered[b.ToolUse.ToolUseID] = false
+			}
+			if b.ToolResult == nil {
+				continue
+			}
+			if _, ok := answered[b.ToolResult.ToolUseID]; !ok {
+				t.Fatalf("tool result %q answers no tool call", b.ToolResult.ToolUseID)
+			}
+			answered[b.ToolResult.ToolUseID] = true
+		}
+	}
+	if len(answered) == 0 {
+		t.Fatal("history contains no tool call; the dispatched call was lost")
+	}
+	for id, ok := range answered {
+		if !ok {
+			t.Fatalf("tool call %q has no matching result", id)
+		}
+	}
+}

@@ -61,7 +61,7 @@ func plan(p Project) (string, []string) {
 	if p.Plan != "" {
 		result = p.Plan
 	} else {
-		wf, _ := orchid.NewWorkflow(p.Gen)
+		wf, _ := orchid.NewWorkflowWithOptions(p.Gen)
 		result, _, _ = wf.Run(context.Background(),
 			"You are a Go architect. When asked to design a package, respond with ONLY:\n1. The type definitions (structs, named types) needed\n2. The full function/method signatures\nUse valid Go syntax. No implementations, no comments, no explanation.",
 			p.Spec)
@@ -91,7 +91,7 @@ func implement(p Project, typePlan string, signatures []string) []string {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			wf, _ := orchid.NewWorkflow(p.Gen)
+			wf, _ := orchid.NewWorkflowWithOptions(p.Gen)
 			text, _, _ := wf.Run(context.Background(), purpose, task)
 			mu.Lock()
 			results[i] = text
@@ -109,7 +109,7 @@ func integrate(p Project, typePlan string, signatures []string, implementations 
 		fmt.Fprintf(&parts, "// %s\n%s\n\n", signatures[i], r)
 	}
 
-	wf, _ := orchid.NewWorkflow(p.Gen)
+	wf, _ := orchid.NewWorkflowWithOptions(p.Gen)
 	result, _, _ := wf.Run(context.Background(),
 		"You are a Go developer. You take function implementations and assemble them into a complete, valid, compilable Go package. You decide what files to create, what types are needed, and what imports go where. Output the complete package as a single block with file boundaries marked as '// FILE: filename.go' on their own line. No markdown fences, no explanation.",
 		fmt.Sprintf(
@@ -145,7 +145,7 @@ func compileLoop(p Project, code string, outDir string, cfg Config) string {
 }
 
 func fixCode(p Project, code string, errors string) string {
-	wf, _ := orchid.NewWorkflow(p.Gen)
+	wf, _ := orchid.NewWorkflowWithOptions(p.Gen)
 	fixed, _, _ := wf.Run(context.Background(),
 		"You are a Go developer fixing compile errors. Output the complete fixed package. Use '// FILE: filename.go' to mark file boundaries. No markdown fences, no explanation.",
 		fmt.Sprintf(

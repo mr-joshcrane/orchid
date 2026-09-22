@@ -2,6 +2,7 @@ package orchid
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -22,13 +23,7 @@ type writerSink struct {
 }
 
 func (s *writerSink) Append(e Event) {
-	data, err := json.Marshal(eventRecord{
-		ID:        e.ID,
-		Type:      e.Type.String(),
-		Timestamp: e.Timestamp,
-		ProcessID: e.ProcessID,
-		Data:      e.Data,
-	})
+	data, err := json.Marshal(newEventRecord(e))
 	if err != nil {
 		return
 	}
@@ -52,7 +47,6 @@ const (
 	EventProcessSpawned
 	EventOutputTruncated
 	EventRootOverride
-	EventPermissionFallback
 	EventPromptSize
 	EventPromptPressure
 	EventHistoryTruncated
@@ -62,18 +56,30 @@ const (
 	EventEffectMetadata
 )
 
+// eventTypeNames is indexed by EventType and is the type's serialised form.
+var eventTypeNames = []string{
+	"UserInput", "AssistantOutput",
+	"EffectIntent", "EffectObserved", "EffectRejected",
+	"ProcessSpawned", "OutputTruncated", "RootOverride",
+	"PromptSize", "PromptPressure",
+	"HistoryTruncated", "EffectMetadata",
+}
+
 func (t EventType) String() string {
-	names := []string{
-		"UserInput", "AssistantOutput",
-		"EffectIntent", "EffectObserved", "EffectRejected",
-		"ProcessSpawned", "OutputTruncated", "RootOverride",
-		"PermissionFallback", "PromptSize", "PromptPressure",
-		"HistoryTruncated", "EffectMetadata",
-	}
-	if int(t) < len(names) {
-		return names[t]
+	if int(t) < len(eventTypeNames) {
+		return eventTypeNames[t]
 	}
 	return fmt.Sprintf("EventType(%d)", t)
+}
+
+// parseEventType resolves a serialised type name.
+func parseEventType(name string) (EventType, error) {
+	for i, n := range eventTypeNames {
+		if n == name {
+			return EventType(i), nil
+		}
+	}
+	return 0, fmt.Errorf("orchid: unknown event type %q", name)
 }
 
 // Event is an immutable record of something that happened.
@@ -187,12 +193,73 @@ func (l *EventLog) Since(id uint64) []Event {
 	return l.Slice(id+1, 0)
 }
 
+// EventLogVersion is the schema version stamped on every serialised event.
+// Bump it when a field's meaning changes, and migrate the old shape in eventRecord.event.
+const EventLogVersion = 1
+
 type eventRecord struct {
+	Version   int               `json:"v"`
 	ID        uint64            `json:"id"`
 	Type      string            `json:"type"`
 	Timestamp time.Time         `json:"timestamp"`
 	ProcessID string            `json:"process_id"`
 	Data      map[string]string `json:"data"`
+}
+
+func newEventRecord(e Event) eventRecord {
+	return eventRecord{
+		Version:   EventLogVersion,
+		ID:        e.ID,
+		Type:      e.Type.String(),
+		Timestamp: e.Timestamp,
+		ProcessID: e.ProcessID,
+		Data:      e.Data,
+	}
+}
+
+func (r eventRecord) event() (Event, error) {
+	// Version 0 predates the version field and matches version 1.
+	if r.Version > EventLogVersion {
+		return Event{}, fmt.Errorf(
+			"orchid: event log version %d is newer than this build supports (%d)",
+			r.Version, EventLogVersion,
+		)
+	}
+	typ, err := parseEventType(r.Type)
+	if err != nil {
+		return Event{}, err
+	}
+	return Event{
+		ID:        r.ID,
+		Type:      typ,
+		Timestamp: r.Timestamp,
+		ProcessID: r.ProcessID,
+		Data:      r.Data,
+	}, nil
+}
+
+// ReadEvents decodes the JSONL log written by WriteTo and WithLogDir.
+// Decoding is strict: an unknown field, type, or version is an error.
+func ReadEvents(r io.Reader) ([]Event, error) {
+	dec := json.NewDecoder(r)
+	dec.DisallowUnknownFields()
+
+	var events []Event
+	for line := 1; ; line++ {
+		var rec eventRecord
+		err := dec.Decode(&rec)
+		if errors.Is(err, io.EOF) {
+			return events, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("orchid: reading event %d: %w", line, err)
+		}
+		e, err := rec.event()
+		if err != nil {
+			return nil, fmt.Errorf("orchid: event %d: %w", line, err)
+		}
+		events = append(events, e)
+	}
 }
 
 func (l *EventLog) WriteTo(w io.Writer) (int64, error) {
@@ -203,13 +270,7 @@ func (l *EventLog) WriteTo(w io.Writer) (int64, error) {
 
 	var total int64
 	for _, e := range snapshot {
-		data, err := json.Marshal(eventRecord{
-			ID:        e.ID,
-			Type:      e.Type.String(),
-			Timestamp: e.Timestamp,
-			ProcessID: e.ProcessID,
-			Data:      e.Data,
-		})
+		data, err := json.Marshal(newEventRecord(e))
 		if err != nil {
 			return total, err
 		}

@@ -2,7 +2,8 @@ package orchid
 
 import "sync"
 
-type Capability string
+// Capability is a tool name granted to a process. Grants live in Permissions.
+type Capability = ToolName
 
 type LogView struct {
 	Source   *EventLog
@@ -24,21 +25,14 @@ type Process struct {
 	Name          string
 	Purpose       string
 	Generator     Generator
-	Capabilities  map[Capability]bool
 	Permissions   map[Permission]bool
 	View          LogView
 	State         ProcessState
 	Err           error
 	ParentID      string
 	Tools         []ToolDefinition
-	EffectCache   map[string]EffectResult
-	cacheMu       sync.Mutex
 	Usage         TokenUsage
 	ContextPolicy ContextPolicy
-}
-
-func (p *Process) HasCapability(c Capability) bool {
-	return p.Capabilities[c]
 }
 
 func (p *Process) HasPermission(perm Permission) bool {

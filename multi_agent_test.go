@@ -50,7 +50,7 @@ func TestWorkflow_Run_FileSearch(t *testing.T) {
 		},
 	}
 
-	wf, err := orchid.NewWorkflow(gen, readTool)
+	wf, err := orchid.NewWorkflowWithOptions(gen, orchid.WithTools(readTool))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func (g *fileSearchGenerator) Generate(ctx orchid.Context) orchid.Proposal {
 func TestWorkflow_Run_StoreImplementation(t *testing.T) {
 	gen := &storeGenerator{}
 
-	wf, err := orchid.NewWorkflow(gen)
+	wf, err := orchid.NewWorkflowWithOptions(gen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +224,7 @@ func TestWorkflow_Run_WithTools(t *testing.T) {
 		},
 	}
 
-	wf, err := orchid.NewWorkflow(gen, readTool)
+	wf, err := orchid.NewWorkflowWithOptions(gen, orchid.WithTools(readTool))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestBuildProcessTree_Structure(t *testing.T) {
 		return orchid.Proposal{Text: "echo: " + ctx.LastInput, InputTokens: 50, OutputTokens: 10}
 	})
 
-	wf, err := orchid.NewWorkflow(gen)
+	wf, err := orchid.NewWorkflowWithOptions(gen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +274,7 @@ func TestPrintTree_Output(t *testing.T) {
 		return orchid.Proposal{Text: "ok", InputTokens: 100, OutputTokens: 20}
 	})
 
-	wf, err := orchid.NewWorkflow(gen)
+	wf, err := orchid.NewWorkflowWithOptions(gen)
 	if err != nil {
 		t.Fatal(err)
 	}

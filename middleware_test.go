@@ -168,7 +168,7 @@ func TestWorkflow_Use_LegacyHandlerGetsMiddleware(t *testing.T) {
 		Handler: func(args map[string]string) (string, error) { return "data", nil },
 	}
 
-	wf, err := NewWorkflow(gen, readTool)
+	wf, err := NewWorkflowWithOptions(gen, WithTools(readTool))
 	if err != nil {
 		t.Fatal(err)
 	}
