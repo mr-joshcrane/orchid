@@ -27,9 +27,19 @@ type BedrockGenerator struct {
 	retryConfig    *overflow.RetryConfig
 	overflowPolicy overflow.OverflowPolicy
 	contextLimit   int
+	temperature    *float64
 }
 
 type BedrockOption func(*BedrockGenerator)
+
+// BedrockWithTemperature sets the sampling temperature. Left unset, no
+// temperature is sent: models from the Claude 4.6 generation onwards reject
+// the parameter with a 400, and earlier ones apply a default of their own.
+func BedrockWithTemperature(t float64) BedrockOption {
+	return func(g *BedrockGenerator) {
+		g.temperature = &t
+	}
+}
 
 // BedrockWithContextLimit sets the model's context window, overriding the lookup table.
 func BedrockWithContextLimit(tokens int) BedrockOption {
@@ -95,9 +105,9 @@ func (g *BedrockGenerator) Generate(ctx Context) Proposal {
 	body := bedrockRequest{
 		Messages: toBedrockMessages(history),
 		System:   []bedrockTextBlock{{Text: purpose}},
-		InferenceConfig: &bedrockInferenceConfig{
-			Temperature: floatPtr(0),
-		},
+	}
+	if g.temperature != nil {
+		body.InferenceConfig = &bedrockInferenceConfig{Temperature: g.temperature}
 	}
 	tools := g.buildTools(ctx.Tools)
 	if len(tools) > 0 {
@@ -340,8 +350,7 @@ type bedrockOutput struct {
 	Message bedrockMessage `json:"message"`
 }
 
-func strPtr(s string) *string     { return &s }
-func floatPtr(f float64) *float64 { return &f }
+func strPtr(s string) *string { return &s }
 
 // regionFromARN extracts the region from an ARN like arn:aws:bedrock:us-west-2:1234:...
 func regionFromARN(arn string) string {
